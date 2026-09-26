@@ -1,0 +1,22 @@
+seed: 42
+
+compositional_ood:
+  first_attribute: hair_color
+  first_value: 3
+  second_attribute: face_shape
+  second_value: 3
+  expected_count: 144
+
+  selection_protocol:
+    candidate_pair: hair_color__face_shape
+    criterion: closest_to_median_combination_count
+    median_count: 143.5
+    tie_break: lexicographically_smallest_attribute_values
+
+ordinary_split:
+  train_ratio: 0.8
+  validation_ratio: 0.1
+  test_ratio: 0.1
+  stratify_by:
+    - hair_color
+    - face_shape
