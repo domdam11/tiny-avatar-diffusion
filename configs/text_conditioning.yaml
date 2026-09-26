@@ -1,0 +1,38 @@
+caption:
+  prefix: "a cartoon avatar with"
+
+  attributes:
+    - key: face_shape
+      phrase: "face shape"
+
+    - key: face_color
+      phrase: "face color"
+
+    - key: hair
+      phrase: "hair style"
+
+    - key: hair_color
+      phrase: "hair color"
+
+    - key: eye_color
+      phrase: "eye color"
+
+    - key: chin_length
+      phrase: "chin length"
+
+    - key: facial_hair
+      phrase: "facial hair style"
+
+    - key: glasses
+      phrase: "glasses type"
+
+tokenizer:
+  model: word_level
+  pre_tokenizer: whitespace
+  min_frequency: 1
+
+  special_tokens:
+    unk: "[UNK]"
+    pad: "[PAD]"
+    sos: "[SOS]"
+    eos: "[EOS]"
