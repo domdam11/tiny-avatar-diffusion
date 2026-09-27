@@ -1,0 +1,14 @@
+text_encoder:
+  vocab_size: 132
+  max_sequence_length: 39
+  pad_token_id: 1
+
+  d_model: 128
+  num_heads: 4
+  num_layers: 4
+  feed_forward_dim: 512
+  dropout: 0.10
+
+  positional_encoding: sinusoidal
+  normalization: pre_norm
+  activation: gelu
