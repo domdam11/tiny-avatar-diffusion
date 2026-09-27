@@ -1,0 +1,16 @@
+diffusion:
+  num_timesteps: 1000
+
+  beta_schedule:
+    type: linear
+    beta_start: 0.0001
+    beta_end: 0.02
+
+  prediction_type: epsilon
+
+data:
+  image_size: 32
+  image_channels: 3
+  normalization:
+    minimum: -1.0
+    maximum: 1.0
