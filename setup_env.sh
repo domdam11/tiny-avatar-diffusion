@@ -1,0 +1,2 @@
+#!/bin/bash
+pip install einops PyYAML tokenizers pandas Pillow matplotlib tqdm scikit-learn scikit-image tensorboard torchmetrics torch-fidelity pytest
