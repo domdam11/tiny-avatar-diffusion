@@ -103,13 +103,13 @@ def test_cross_attention_shape():
 
     context = torch.randn(
         2,
-        39,
+        44,
         128,
     )
 
     mask = torch.ones(
         2,
-        39,
+        44,
         dtype=torch.long,
     )
 
@@ -204,13 +204,13 @@ def test_conditional_output_shape(
 
     context = torch.randn(
         2,
-        39,
+        44,
         128,
     )
 
     mask = torch.ones(
         2,
-        39,
+        44,
         dtype=torch.long,
     )
 
@@ -290,13 +290,13 @@ def test_unconditional_rejects_context(
 
     context = torch.randn(
         1,
-        39,
+        44,
         128,
     )
 
     mask = torch.ones(
         1,
-        39,
+        44,
         dtype=torch.long,
     )
 
@@ -328,14 +328,14 @@ def test_backward_reaches_context(
 
     context = torch.randn(
         1,
-        39,
+        44,
         128,
         requires_grad=True,
     )
 
     mask = torch.ones(
         1,
-        39,
+        44,
         dtype=torch.long,
     )
 
@@ -387,14 +387,14 @@ def test_conditional_model_cuda(config):
 
     context = torch.randn(
         2,
-        39,
+        44,
         128,
         device="cuda",
     )
 
     mask = torch.ones(
         2,
-        39,
+        44,
         dtype=torch.long,
         device="cuda",
     )
