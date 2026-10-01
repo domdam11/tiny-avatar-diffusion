@@ -53,7 +53,7 @@ def generate_caption(row: Mapping, caption_config: dict) -> str:
     for item in caption_config["attributes"]:
         attribute = item["key"]
         phrase = item["phrase"].strip()
-        
+
         if attribute not in row:
             raise KeyError(f"Attributo mancante: {attribute}")
 
