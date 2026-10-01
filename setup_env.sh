@@ -1,2 +1,5 @@
-#!/bin/bash
-pip install einops PyYAML tokenizers pandas Pillow matplotlib tqdm scikit-learn scikit-image tensorboard torchmetrics torch-fidelity pytest
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Installa le dipendenze base
+python -m pip install -r requirements.txt

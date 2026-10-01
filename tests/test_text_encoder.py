@@ -84,7 +84,7 @@ def test_config_matches_tokenizer(
         encoder_config[
             "max_sequence_length"
         ]
-        == 39
+        == 44
     )
 
     assert (
@@ -122,7 +122,7 @@ def test_output_shape_and_values(
 
     assert output.shape == (
         8,
-        39,
+        44,
         128,
     )
 
@@ -462,7 +462,7 @@ def test_cuda_forward(
 
     assert output.shape == (
         8,
-        39,
+        44,
         128,
     )
 

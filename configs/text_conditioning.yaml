@@ -3,28 +3,21 @@ caption:
 
   attributes:
     - key: face_shape
-      phrase: "face shape"
-
+      phrase: "face shape variant"
     - key: face_color
-      phrase: "face color"
-
+      phrase: "face color variant"
     - key: hair
-      phrase: "hair style"
-
+      phrase: "hairstyle variant"
     - key: hair_color
-      phrase: "hair color"
-
+      phrase: "hair color variant"
     - key: eye_color
-      phrase: "eye color"
-
+      phrase: "eye color variant"
     - key: chin_length
-      phrase: "chin length"
-
+      phrase: "chin length variant"
     - key: facial_hair
-      phrase: "facial hair style"
-
+      phrase: "facial hair variant"
     - key: glasses
-      phrase: "glasses type"
+      phrase: "glasses variant"
 
 tokenizer:
   model: word_level
