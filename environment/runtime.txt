@@ -1,6 +1,6 @@
 Python: 3.13.15
-PyTorch: 2.11.0+cu128
-Torchvision: 0.26.0+cu128
-CUDA runtime: 12.8
+PyTorch: 2.11.0+cu130
+Torchvision: 0.26.0+cu130
+CUDA runtime: 13.0
 CUDA available: True
 GPU: Tesla T4
