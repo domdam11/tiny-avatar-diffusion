@@ -70,7 +70,7 @@ def test_dataset_sequence_length(
     datasets,
 ):
     for dataset in datasets.values():
-        assert dataset.sequence_length == 44
+        assert dataset.sequence_length == 39
 
 
 def test_sample_structure(
@@ -133,12 +133,12 @@ def test_text_tensors(
     sample = datasets["train"][0]
 
     assert sample["input_ids"].shape == (
-        44,
+        39,
     )
 
     assert (
         sample["attention_mask"].shape
-        == (44,)
+        == (39,)
     )
 
     assert (
@@ -290,12 +290,12 @@ def test_default_batch_collation(
 
     assert batch["input_ids"].shape == (
         8,
-        44,
+        39,
     )
 
     assert (
         batch["attention_mask"].shape
-        == (8, 44)
+        == (8, 39)
     )
 
     assert batch["attributes"].shape == (
@@ -521,5 +521,5 @@ def test_production_multiworker_batch(
 
     assert batch["input_ids"].shape == (
         8,
-        44,
+        39,
     )
