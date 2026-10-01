@@ -1,6 +1,6 @@
 text_encoder:
   vocab_size: 132
-  max_sequence_length: 39
+  max_sequence_length: 44
   pad_token_id: 1
 
   d_model: 128
