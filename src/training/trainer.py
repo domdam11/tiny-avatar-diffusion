@@ -62,7 +62,7 @@ class Trainer:
         self.amp_enabled = bool(training_config.get("amp", {}).get("enabled", False))
 
         self.scaler = torch.amp.GradScaler("cuda", enabled=self.amp_enabled)
-        
+
         seed = int(training_config.get("seed", 42))
         self.train_generator = torch.Generator(device=device).manual_seed(seed)
         self.evaluation_seed = int(training_config.get("evaluation", {}).get("seed", 3107))
@@ -135,7 +135,7 @@ class Trainer:
 
         self.scaler.scale(loss).backward()
         self.scaler.unscale_(self.optimizer)
-        
+
         gradient_norm = torch.nn.utils.clip_grad_norm_(
             self.parameters, max_norm=self.gradient_clip_norm, error_if_nonfinite=True
         )
