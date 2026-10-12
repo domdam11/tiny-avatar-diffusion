@@ -362,21 +362,25 @@ class Trainer:
                 batch = next(train_iterator)
 
             metrics = self.train_step(batch)
-
             evaluation_loss = None
 
-            if self.step == 1 or self.step % evaluation_every == 0:
+            should_evaluate = (
+                self.validation_dataloader is not None
+                and evaluation_every > 0
+                and (self.step == 1 or self.step % evaluation_every == 0)
+            )
+
+            if should_evaluate:
                 evaluation_loss = self.evaluate()
                 metrics["evaluation_loss"] = evaluation_loss
 
-            self.history.append(metrics)
+                if evaluation_loss < self.best_evaluation_loss:
+                    self.best_evaluation_loss = evaluation_loss
+                    self.history.append(metrics.copy())
+                    self.save(best_path)
+                    self.history.pop()
 
-            if (
-                evaluation_loss is not None
-                and evaluation_loss < self.best_evaluation_loss
-            ):
-                self.best_evaluation_loss = evaluation_loss
-                self.save(best_path)
+            self.history.append(metrics)
 
             if self.step == 1 or self.step % logging_every == 0:
                 evaluation_string = (
