@@ -26,5 +26,4 @@ overfit:
 
   logging:
     every_steps: 25
-    
-  history_path: outputs/tiny_overfit/history.csv
+    history_path: outputs/tiny_overfit/history.csv
