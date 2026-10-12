@@ -4,3 +4,4 @@ Torchvision: 0.26.0+cu130
 CUDA runtime: 13.0
 CUDA available: True
 GPU: Tesla T4
+GPU memory GiB: 14.56
