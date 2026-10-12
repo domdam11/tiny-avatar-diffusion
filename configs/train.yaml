@@ -1,0 +1,27 @@
+training:
+  seed: 2026
+  max_steps: 10000
+  batch_size: 64
+
+  learning_rate:
+    unet: 0.0002
+    text_encoder: 0.0001
+
+  weight_decay: 0.0001
+  gradient_clip_norm: 1.0
+
+  amp:
+    enabled: true
+    dtype: float16
+
+  evaluation:
+    seed: 3107
+    every_steps: 500
+
+  checkpoint:
+    every_steps: 1000
+    directory: checkpoints/train
+
+  logging:
+    every_steps: 100
+    history_path: outputs/train/history.csv

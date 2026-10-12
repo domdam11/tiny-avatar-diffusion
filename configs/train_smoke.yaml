@@ -1,0 +1,27 @@
+training:
+  seed: 2026
+
+  max_steps: 20
+  batch_size: 16
+
+  learning_rate:
+    unet: 0.0002
+    text_encoder: 0.0001
+
+  weight_decay: 0.0001
+  gradient_clip_norm: 1.0
+
+  amp:
+    enabled: true
+
+  evaluation:
+    seed: 3107
+    every_steps: 10
+
+  checkpoint:
+    every_steps: 10
+    directory: checkpoints/train_smoke
+
+  logging:
+    every_steps: 1
+    history_path: outputs/train_smoke/history.csv
