@@ -221,7 +221,9 @@ class Trainer:
     @torch.inference_mode()
     def evaluate(self) -> float:
         if self.validation_dataloader is None:
-            return 0.0
+            raise RuntimeError(
+                "evaluate() chiamata senza validation_dataloader."
+            )
 
         self.conditional_unet.eval()
 
