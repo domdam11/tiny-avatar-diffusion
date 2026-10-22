@@ -23,6 +23,7 @@ from src.utils.checkpoint import (
 def load_overfit_config(
     path: Path,
 ) -> dict:
+    # Carica la configurazione dedicata al tiny overfit
     with Path(path).open(
         "r",
         encoding="utf-8",
@@ -40,6 +41,7 @@ def load_overfit_config(
 def set_training_seed(
     seed: int,
 ) -> None:
+    # Rende il training riproducibile
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -63,6 +65,7 @@ class TinyOverfitTrainer:
         device: torch.device,
         config: dict,
     ) -> None:
+        # Il tiny overfit è pensato per GPU
         if device.type != "cuda":
             raise ValueError(
                 "Il tiny-overfit richiede CUDA."
@@ -78,9 +81,7 @@ class TinyOverfitTrainer:
         self.device = device
         self.config = config
 
-        overfit_config = config[
-            "overfit"
-        ]
+        overfit_config = config["overfit"]
 
         self.gradient_clip_norm = float(
             overfit_config[
@@ -89,35 +90,26 @@ class TinyOverfitTrainer:
         )
 
         self.amp_enabled = bool(
-            overfit_config[
-                "amp"
-            ]["enabled"]
+            overfit_config["amp"]["enabled"]
         )
 
-        self.scaler = (
-            torch.amp.GradScaler(
-                "cuda",
-                enabled=self.amp_enabled,
-            )
+        self.scaler = torch.amp.GradScaler(
+            "cuda",
+            enabled=self.amp_enabled,
         )
 
         self.train_generator = (
             torch.Generator(
                 device=device
-            )
-            .manual_seed(
-                int(
-                    overfit_config[
-                        "seed"
-                    ]
-                )
+            ).manual_seed(
+                int(overfit_config["seed"])
             )
         )
 
         self.evaluation_seed = int(
-            overfit_config[
-                "evaluation"
-            ]["seed"]
+            overfit_config["evaluation"][
+                "seed"
+            ]
         )
 
         self.step = 0
@@ -132,6 +124,7 @@ class TinyOverfitTrainer:
     def _prepare_batch(
         self,
     ) -> tuple[Tensor, Tensor, Tensor]:
+        # Sposta il batch fisso sul device di training
         images = self.fixed_batch[
             "image"
         ].to(
@@ -164,6 +157,7 @@ class TinyOverfitTrainer:
         images: Tensor,
         generator: torch.Generator,
     ) -> tuple[Tensor, Tensor, Tensor]:
+        # Campiona i timestep e costruisce x_t con il rumore target
         timesteps = torch.randint(
             low=0,
             high=self.schedule.num_timesteps,
@@ -173,7 +167,7 @@ class TinyOverfitTrainer:
             generator=generator,
         )
 
-        noisy_images, target_noise = (
+        noisyimages, target_noise = (
             self.schedule.q_sample(
                 x_start=images,
                 timesteps=timesteps,
@@ -182,18 +176,19 @@ class TinyOverfitTrainer:
         )
 
         return (
-            noisy_images,
+            noisyimages,
             target_noise,
             timesteps,
         )
 
     def _predict_noise(
         self,
-        noisy_images,
+        noisyimages,
         timesteps,
         input_ids,
         attention_mask,
     ):
+        # Verifica minima sulla correttezza del conditioning
         if attention_mask is None:
             raise ValueError(
                 "_predict_noise ha ricevuto attention_mask=None."
@@ -220,7 +215,7 @@ class TinyOverfitTrainer:
         )
 
         return self.conditional_unet(
-            noisy_images=noisy_images,
+            noisyimages=noisyimages,
             timesteps=timesteps,
             context=text_context,
             attention_mask=attention_mask,
@@ -229,6 +224,7 @@ class TinyOverfitTrainer:
     def train_step(
         self,
     ) -> dict:
+        # Esegue un singolo passo di training sul batch fisso
         self.conditional_unet.train()
         self.text_encoder.train()
 
@@ -239,7 +235,7 @@ class TinyOverfitTrainer:
         ) = self._prepare_batch()
 
         (
-            noisy_images,
+            noisyimages,
             target_noise,
             timesteps,
         ) = self._build_noisy_batch(
@@ -258,7 +254,7 @@ class TinyOverfitTrainer:
         ):
             predicted_noise = (
                 self._predict_noise(
-                    noisy_images=noisy_images,
+                    noisyimages=noisyimages,
                     timesteps=timesteps,
                     input_ids=input_ids,
                     attention_mask=(
@@ -299,7 +295,6 @@ class TinyOverfitTrainer:
         self.scaler.step(
             self.optimizer
         )
-
         self.scaler.update()
 
         self.step += 1
@@ -321,6 +316,7 @@ class TinyOverfitTrainer:
     def evaluate(
         self,
     ) -> float:
+        # Valutazione deterministica con seed fisso
         self.conditional_unet.eval()
         self.text_encoder.eval()
 
@@ -333,14 +329,13 @@ class TinyOverfitTrainer:
         generator = (
             torch.Generator(
                 device=self.device
-            )
-            .manual_seed(
+            ).manual_seed(
                 self.evaluation_seed
             )
         )
 
         (
-            noisy_images,
+            noisyimages,
             target_noise,
             timesteps,
         ) = self._build_noisy_batch(
@@ -355,7 +350,7 @@ class TinyOverfitTrainer:
         ):
             predicted_noise = (
                 self._predict_noise(
-                    noisy_images=noisy_images,
+                    noisyimages=noisyimages,
                     timesteps=timesteps,
                     input_ids=input_ids,
                     attention_mask=(
@@ -375,6 +370,7 @@ class TinyOverfitTrainer:
         self,
         path: Path,
     ) -> None:
+        # Salva lo stato completo del tiny overfit
         save_training_checkpoint(
             path=path,
             models={
@@ -406,6 +402,7 @@ class TinyOverfitTrainer:
         self,
         path: Path,
     ) -> dict:
+        # Ripristina un run precedente
         checkpoint = (
             load_training_checkpoint(
                 path=path,
@@ -457,6 +454,7 @@ class TinyOverfitTrainer:
         self,
         path: Path,
     ) -> None:
+        # Esporta la history su CSV
         path = Path(path)
         path.parent.mkdir(
             parents=True,
@@ -506,6 +504,7 @@ class TinyOverfitTrainer:
         history_path: Path,
         logging_every: int,
     ) -> None:
+        # Loop principale di tiny overfit
         checkpoint_directory = Path(
             checkpoint_directory
         )
@@ -586,9 +585,9 @@ class TinyOverfitTrainer:
                     latest_path
                 )
 
-                self.write_history(
-                    history_path
-                )
+            self.write_history(
+                history_path
+            )
 
         print(
             "Training terminato. "

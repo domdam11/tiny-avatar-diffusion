@@ -60,10 +60,12 @@ class Trainer:
 
         training_config = config["training"]
 
+        # Configurazione numerica del training
         self.gradient_clip_norm = float(
             training_config.get("gradient_clip_norm", 1.0)
         )
 
+        # AMP attivo solo quando richiesto e disponibile
         requested_amp = bool(
             training_config.get("amp", {}).get("enabled", False)
         )
@@ -93,6 +95,7 @@ class Trainer:
 
         self.parameters = list(self.conditional_unet.parameters())
 
+        # Il trainer è conditional se è presente il text encoder
         if self.text_encoder is not None:
             self.parameters.extend(self.text_encoder.parameters())
 
@@ -124,24 +127,25 @@ class Trainer:
             generator=generator,
         )
 
-        noisy_images, target_noise = self.schedule.q_sample(
+        noisyimages, target_noise = self.schedule.q_sample(
             x_start=images,
             timesteps=timesteps,
             generator=generator,
         )
 
-        return noisy_images, target_noise, timesteps
+        return noisyimages, target_noise, timesteps
 
     def predict_noise(
         self,
-        noisy_images: Tensor,
+        noisyimages: Tensor,
         timesteps: Tensor,
         input_ids: Tensor,
         attention_mask: Tensor,
     ) -> Tensor:
+        # In unconditional la U-Net viene invocata senza context
         if not self.is_conditional:
             return self.conditional_unet(
-                noisy_images=noisy_images,
+                noisyimages=noisyimages,
                 timesteps=timesteps,
                 context=None,
                 attention_mask=None,
@@ -153,7 +157,7 @@ class Trainer:
         )
 
         return self.conditional_unet(
-            noisy_images=noisy_images,
+            noisyimages=noisyimages,
             timesteps=timesteps,
             context=text_context,
             attention_mask=attention_mask,
@@ -167,7 +171,7 @@ class Trainer:
 
         images, input_ids, attention_mask = self.prepare_batch(batch)
 
-        noisy_images, target_noise, timesteps = self.build_noisy_batch(
+        noisyimages, target_noise, timesteps = self.build_noisy_batch(
             images=images,
             generator=self.train_generator,
         )
@@ -180,7 +184,7 @@ class Trainer:
             enabled=self.amp_enabled,
         ):
             predicted_noise = self.predict_noise(
-                noisy_images=noisy_images,
+                noisyimages=noisyimages,
                 timesteps=timesteps,
                 input_ids=input_ids,
                 attention_mask=attention_mask,
@@ -240,7 +244,7 @@ class Trainer:
         for batch in self.validation_dataloader:
             images, input_ids, attention_mask = self.prepare_batch(batch)
 
-            noisy_images, target_noise, timesteps = self.build_noisy_batch(
+            noisyimages, target_noise, timesteps = self.build_noisy_batch(
                 images=images,
                 generator=generator,
             )
@@ -251,7 +255,7 @@ class Trainer:
                 enabled=self.amp_enabled,
             ):
                 predicted_noise = self.predict_noise(
-                    noisy_images=noisy_images,
+                    noisyimages=noisyimages,
                     timesteps=timesteps,
                     input_ids=input_ids,
                     attention_mask=attention_mask,
@@ -270,6 +274,7 @@ class Trainer:
             total_loss += float(loss.item())
             batches += 1
 
+        # La validation loss è mediata su tutto il validation set
         return total_loss / max(1, batches)
 
     def save(self, path: Path) -> None:
@@ -358,6 +363,7 @@ class Trainer:
         while self.step < max_steps:
             try:
                 batch = next(train_iterator)
+
             except StopIteration:
                 self.epoch += 1
                 train_iterator = iter(self.train_dataloader)
@@ -399,6 +405,7 @@ class Trainer:
                     f"Grad {metrics['gradient_norm']:.4f}"
                 )
 
+            # latest.pt salva lo stato corrente, best.pt il miglior modello
             if self.step % checkpoint_every == 0 or self.step == max_steps:
                 self.save(latest_path)
                 self.write_history(history_path)

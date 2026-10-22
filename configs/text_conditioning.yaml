@@ -1,6 +1,8 @@
 caption:
   prefix: "a cartoon avatar with"
 
+  # Gli attributi sono elencati in ordine fisso:
+  # la stessa riga di metadata produrrà sempre la stessa caption.
   attributes:
     - key: face_shape
       phrase: "face shape variant"
@@ -24,6 +26,8 @@ tokenizer:
   pre_tokenizer: whitespace
   min_frequency: 1
 
+  # Token riservati per parole sconosciute, padding e delimitazione
+  # delle sequenze in ingresso al text encoder.
   special_tokens:
     unk: "[UNK]"
     pad: "[PAD]"

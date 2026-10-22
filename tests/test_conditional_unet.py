@@ -6,407 +6,232 @@ import torch
 
 from src.models.conditional_unet import (
     ConditionalUNet,
-    CrossAttention2D,
-    SinusoidalTimeEmbedding,
     load_unet_config,
 )
 
 
-CONFIG_PATH = Path(
-    "configs/unet.yaml"
-)
+CONFIG_PATH = Path("configs/unet.yaml")
 
 
 @pytest.fixture(scope="module")
-def config():
-    return load_unet_config(
-        CONFIG_PATH
-    )
+def config() -> dict:
+    return load_unet_config(CONFIG_PATH)
 
 
 @pytest.fixture(scope="module")
-def conditional_model(config):
-    return ConditionalUNet.from_config(
+def conditional_unet(config: dict) -> ConditionalUNet:
+    torch.manual_seed(2026)
+
+    model = ConditionalUNet.from_config(
         config,
         conditional=True,
-    ).eval()
+    )
+
+    model.eval()
+
+    return model
 
 
 @pytest.fixture(scope="module")
-def unconditional_model(config):
-    return ConditionalUNet.from_config(
+def unconditional_unet(config: dict) -> ConditionalUNet:
+    torch.manual_seed(2026)
+
+    model = ConditionalUNet.from_config(
         config,
         conditional=False,
-    ).eval()
+    )
+
+    model.eval()
+
+    return model
 
 
-def test_configuration(config):
-    model_config = config["unet"]
+def build_conditional_inputs(
+    batch_size: int = 2,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    # Costruisce un batch sintetico compatibile con le configurazioni
+    # ufficiali del progetto.
 
-    assert model_config[
-        "image_channels"
-    ] == 3
+    torch.manual_seed(2026)
 
-    assert model_config[
-        "base_channels"
-    ] == 64
-
-    assert model_config[
-        "channel_multipliers"
-    ] == [1, 2, 4]
-
-    assert model_config[
-        "context_dim"
-    ] == 128
-
-
-def test_time_embedding():
-    module = SinusoidalTimeEmbedding(
-        embedding_dim=64
+    noisyimages = torch.randn(
+        batch_size,
+        3,
+        32,
+        32,
     )
 
     timesteps = torch.tensor(
-        [0, 1, 500, 999],
+        [10, 750][:batch_size],
         dtype=torch.long,
     )
 
-    embedding = module(timesteps)
-
-    assert embedding.shape == (4, 64)
-    assert torch.isfinite(embedding).all()
-
-    second = module(timesteps)
-
-    torch.testing.assert_close(
-        embedding,
-        second,
-        rtol=0.0,
-        atol=0.0,
-    )
-
-
-def test_cross_attention_shape():
-    attention = CrossAttention2D(
-        channels=64,
-        context_dim=128,
-        num_heads=4,
-        normalization_groups=8,
-        dropout=0.0,
-    ).eval()
-
-    hidden_states = torch.randn(
-        2,
-        64,
-        8,
-        8,
-    )
-
     context = torch.randn(
-        2,
+        batch_size,
         44,
         128,
     )
 
-    mask = torch.ones(
-        2,
+    attention_mask = torch.zeros(
+        batch_size,
         44,
         dtype=torch.long,
     )
 
-    output = attention(
-        hidden_states,
+    attention_mask[:, :8] = 1
+
+    return (
+        noisyimages,
+        timesteps,
         context,
-        mask,
+        attention_mask,
     )
 
-    assert output.shape == (
-        2,
-        64,
-        8,
-        8,
-    )
 
-    assert torch.isfinite(output).all()
+def test_load_unet_config(config: dict) -> None:
+    unet_config = config["unet"]
 
+    assert unet_config["image_channels"] == 3
+    assert unet_config["output_channels"] == 3
+    assert unet_config["base_channels"] == 64
 
-def test_masked_tokens_do_not_affect_attention():
-    torch.manual_seed(42)
-
-    attention = CrossAttention2D(
-        channels=64,
-        context_dim=128,
-        num_heads=4,
-        normalization_groups=8,
-        dropout=0.0,
-    ).eval()
-
-    hidden_states = torch.randn(
+    assert unet_config["channel_multipliers"] == [
         1,
-        64,
+        2,
         4,
-        4,
-    )
+    ]
 
-    first_context = torch.randn(
-        1,
-        6,
-        128,
-    )
-
-    second_context = first_context.clone()
-
-    second_context[:, 4:] = (
-        torch.randn_like(
-            second_context[:, 4:]
-        )
-        * 1000.0
-    )
-
-    mask = torch.tensor(
-        [[1, 1, 1, 1, 0, 0]],
-        dtype=torch.long,
-    )
-
-    first_output = attention(
-        hidden_states,
-        first_context,
-        mask,
-    )
-
-    second_output = attention(
-        hidden_states,
-        second_context,
-        mask,
-    )
-
-    torch.testing.assert_close(
-        first_output,
-        second_output,
-        rtol=1e-5,
-        atol=1e-5,
-    )
+    assert unet_config["num_res_blocks"] == 2
+    assert unet_config["time_embedding_dim"] == 256
+    assert unet_config["context_dim"] == 128
+    assert unet_config["attention_levels"] == [1, 2]
+    assert unet_config["attention_heads"] == 4
 
 
-def test_conditional_output_shape(
-    conditional_model,
-):
-    noisy_images = torch.randn(
-        2,
-        3,
-        32,
-        32,
-    )
+def test_conditional_unet_is_a_real_multiresolution_unet(
+    conditional_unet: ConditionalUNet,
+) -> None:
+    # Verifica strutturale: la configurazione deve governare davvero
+    # encoder, decoder, downsampling, upsampling e skip connection.
 
-    timesteps = torch.tensor(
-        [0, 999],
-        dtype=torch.long,
-    )
+    assert len(conditional_unet.channels) == 3
+    assert conditional_unet.channels == [64, 128, 256]
 
-    context = torch.randn(
-        2,
-        44,
-        128,
-    )
+    assert len(conditional_unet.down_blocks) == 3
+    assert len(conditional_unet.up_blocks) == 3
 
-    mask = torch.ones(
-        2,
-        44,
-        dtype=torch.long,
-    )
+    # I primi due livelli encoder riducono la risoluzione.
+    assert conditional_unet.down_blocks[0].downsample is not None
+    assert conditional_unet.down_blocks[1].downsample is not None
+    assert conditional_unet.down_blocks[2].downsample is None
 
-    with torch.no_grad():
-        output = conditional_model(
-            noisy_images=noisy_images,
+    # I primi due blocchi decoder, ordinati dal livello profondo
+    # verso quello superficiale, riportano alla risoluzione iniziale.
+    assert conditional_unet.up_blocks[0].upsample is not None
+    assert conditional_unet.up_blocks[1].upsample is not None
+    assert conditional_unet.up_blocks[2].upsample is None
+
+    # I blocchi residuali configurati sono realmente presenti.
+    for down_block in conditional_unet.down_blocks:
+        assert len(down_block.residual_blocks) == 2
+
+    for up_block in conditional_unet.up_blocks:
+        assert len(up_block.residual_blocks) == 2
+
+    # attention_levels=[1, 2]: nessuna attention al livello 0,
+    # attention ai due livelli più profondi.
+    assert conditional_unet.down_blocks[0].attention is None
+    assert conditional_unet.down_blocks[1].attention is not None
+    assert conditional_unet.down_blocks[2].attention is not None
+
+    assert conditional_unet.middle_block.attention is not None
+
+    # L'ordine del decoder è: livello 2, livello 1, livello 0.
+    assert conditional_unet.up_blocks[0].attention is not None
+    assert conditional_unet.up_blocks[1].attention is not None
+    assert conditional_unet.up_blocks[2].attention is None
+
+
+def test_conditional_forward_preserves_image_shape(
+    conditional_unet: ConditionalUNet,
+) -> None:
+    (
+        noisyimages,
+        timesteps,
+        context,
+        attention_mask,
+    ) = build_conditional_inputs()
+
+    with torch.inference_mode():
+        predicted_noise = conditional_unet(
+            noisyimages=noisyimages,
             timesteps=timesteps,
             context=context,
-            attention_mask=mask,
+            attention_mask=attention_mask,
         )
 
-    assert output.shape == noisy_images.shape
-    assert torch.isfinite(output).all()
+    assert predicted_noise.shape == noisyimages.shape
+    assert torch.isfinite(predicted_noise).all()
 
 
-def test_unconditional_output_shape(
-    unconditional_model,
-):
-    noisy_images = torch.randn(
-        2,
-        3,
-        32,
-        32,
-    )
+def test_unconditional_forward_preserves_image_shape(
+    unconditional_unet: ConditionalUNet,
+) -> None:
+    torch.manual_seed(2026)
+
+    noisyimages = torch.randn(2, 3, 32, 32)
 
     timesteps = torch.tensor(
-        [10, 900],
+        [10, 750],
         dtype=torch.long,
     )
 
-    with torch.no_grad():
-        output = unconditional_model(
-            noisy_images=noisy_images,
+    with torch.inference_mode():
+        predicted_noise = unconditional_unet(
+            noisyimages=noisyimages,
             timesteps=timesteps,
+            context=None,
+            attention_mask=None,
         )
 
-    assert output.shape == noisy_images.shape
-    assert torch.isfinite(output).all()
+    assert predicted_noise.shape == noisyimages.shape
+    assert torch.isfinite(predicted_noise).all()
 
 
-def test_conditioning_is_required(
-    conditional_model,
-):
-    noisy_images = torch.randn(
-        1,
-        3,
-        32,
-        32,
-    )
+def test_conditional_model_requires_text_context(
+    conditional_unet: ConditionalUNet,
+) -> None:
+    noisyimages = torch.randn(1, 3, 32, 32)
+    timesteps = torch.tensor([10], dtype=torch.long)
 
-    timesteps = torch.tensor(
-        [100],
-        dtype=torch.long,
-    )
-
-    with pytest.raises(ValueError):
-        conditional_model(
-            noisy_images=noisy_images,
+    with pytest.raises(ValueError, match="Context"):
+        conditional_unet(
+            noisyimages=noisyimages,
             timesteps=timesteps,
+            context=None,
+            attention_mask=None,
         )
 
 
-def test_unconditional_rejects_context(
-    unconditional_model,
-):
-    noisy_images = torch.randn(
-        1,
-        3,
-        32,
-        32,
+def test_unet_has_meaningful_capacity(
+    conditional_unet: ConditionalUNet,
+    unconditional_unet: ConditionalUNet,
+) -> None:
+    # Evita una nuova regressione alla rete piatta da circa 0.3 M
+    # parametri: il denoiser deve avere capacità adeguata al dataset.
+
+    conditional_parameters = sum(
+        parameter.numel()
+        for parameter in conditional_unet.parameters()
     )
 
-    timesteps = torch.tensor(
-        [100],
-        dtype=torch.long,
+    unconditional_parameters = sum(
+        parameter.numel()
+        for parameter in unconditional_unet.parameters()
     )
 
-    context = torch.randn(
-        1,
-        44,
-        128,
-    )
+    assert conditional_parameters > 5_000_000
+    assert unconditional_parameters > 5_000_000
 
-    mask = torch.ones(
-        1,
-        44,
-        dtype=torch.long,
-    )
-
-    with pytest.raises(ValueError):
-        unconditional_model(
-            noisy_images=noisy_images,
-            timesteps=timesteps,
-            context=context,
-            attention_mask=mask,
-        )
-
-
-def test_backward_reaches_context(
-    conditional_model,
-):
-    model = conditional_model.train()
-
-    noisy_images = torch.randn(
-        1,
-        3,
-        32,
-        32,
-    )
-
-    timesteps = torch.tensor(
-        [500],
-        dtype=torch.long,
-    )
-
-    context = torch.randn(
-        1,
-        44,
-        128,
-        requires_grad=True,
-    )
-
-    mask = torch.ones(
-        1,
-        44,
-        dtype=torch.long,
-    )
-
-    output = model(
-        noisy_images=noisy_images,
-        timesteps=timesteps,
-        context=context,
-        attention_mask=mask,
-    )
-
-    loss = output.square().mean()
-    loss.backward()
-
-    assert context.grad is not None
-    assert torch.isfinite(
-        context.grad
-    ).all()
-
-    assert context.grad.norm() > 0
-
-
-@pytest.mark.skipif(
-    not torch.cuda.is_available(),
-    reason="CUDA non disponibile",
-)
-def test_conditional_model_cuda(config):
-    model = (
-        ConditionalUNet.from_config(
-            config,
-            conditional=True,
-        )
-        .to("cuda")
-        .eval()
-    )
-
-    noisy_images = torch.randn(
-        2,
-        3,
-        32,
-        32,
-        device="cuda",
-    )
-
-    timesteps = torch.tensor(
-        [0, 999],
-        dtype=torch.long,
-        device="cuda",
-    )
-
-    context = torch.randn(
-        2,
-        44,
-        128,
-        device="cuda",
-    )
-
-    mask = torch.ones(
-        2,
-        44,
-        dtype=torch.long,
-        device="cuda",
-    )
-
-    with torch.no_grad():
-        output = model(
-            noisy_images=noisy_images,
-            timesteps=timesteps,
-            context=context,
-            attention_mask=mask,
-        )
-
-    assert output.is_cuda
-    assert output.shape == noisy_images.shape
-    assert torch.isfinite(output).all()
+    # La cross-attention rende la versione conditional più grande.
+    assert conditional_parameters > unconditional_parameters

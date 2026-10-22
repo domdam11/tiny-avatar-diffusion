@@ -14,13 +14,13 @@ class DummyUNet(torch.nn.Module):
 
     def forward(
         self,
-        noisy_images,
+        noisyimages,
         timesteps,
         context,
         attention_mask,
     ):
         del timesteps, context, attention_mask
-        return self.conv(noisy_images)
+        return self.conv(noisyimages)
 
 
 class DummyTextEncoder(torch.nn.Module):
@@ -33,6 +33,7 @@ class DummyTextEncoder(torch.nn.Module):
         return self.embedding(input_ids)
 
 
+# Dataset sintetico minimo per test veloci e deterministici
 def build_loader() -> DataLoader:
     images = torch.randn(8, 3, 32, 32)
     input_ids = torch.randint(0, 10, (8, 5))
@@ -61,6 +62,7 @@ def build_config() -> dict:
     }
 
 
+# Verifica del percorso conditional
 def test_conditional_trainer_runs_one_step() -> None:
     unet = DummyUNet()
     text_encoder = DummyTextEncoder()
@@ -91,6 +93,7 @@ def test_conditional_trainer_runs_one_step() -> None:
     assert torch.isfinite(torch.tensor(trainer.evaluate()))
 
 
+# Verifica del percorso unconditional
 def test_unconditional_trainer_runs_one_step() -> None:
     unet = DummyUNet()
     schedule = DDPMSchedule(num_timesteps=10)
@@ -118,6 +121,7 @@ def test_unconditional_trainer_runs_one_step() -> None:
     assert torch.isfinite(torch.tensor(trainer.evaluate()))
 
 
+# Verifica di save/load con ripristino dello stato optimizer
 def test_trainer_checkpoint_resume(tmp_path: Path) -> None:
     loader = build_loader()
     config = build_config()

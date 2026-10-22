@@ -1,0 +1,38 @@
+data:
+  dataset_root: data/raw/cartoonset10k
+  captions_path: data/processed/captions/metadata_with_captions.csv
+  tokenizer_path: data/processed/tokenizer/tokenizer.json
+
+  image_size: 32
+
+  expected_split_counts:
+    train: 7884
+    validation: 986
+    test_ordinary: 986
+    test_ood: 144
+
+  # Gli attributi sono mantenuti anche separatamente dai token
+  # per analisi, controlli e valutazioni condizionali successive.
+  conditioning_attributes:
+    - face_shape
+    - face_color
+    - hair
+    - hair_color
+    - eye_color
+    - chin_length
+    - facial_hair
+    - glasses
+
+loader:
+  train_batch_size: 64
+  evaluation_batch_size: 64
+
+  num_workers: 2
+  pin_memory: true
+  persistent_workers: true
+  prefetch_factor: 2
+
+  # Drop-last è applicato solo al train, così ogni batch di training
+  # ha dimensione costante; gli split di valutazione restano completi.
+  drop_last: true
+  seed: 42

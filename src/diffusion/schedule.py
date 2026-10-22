@@ -1,4 +1,3 @@
-
 from pathlib import Path
 from typing import Optional
 
@@ -10,6 +9,7 @@ import yaml
 def load_diffusion_config(
     config_path: Path,
 ) -> dict:
+    # Carica e valida la configurazione DDPM
     with config_path.open(
         "r",
         encoding="utf-8",
@@ -35,10 +35,7 @@ def load_diffusion_config(
         "prediction_type",
     }
 
-    missing = (
-        required_diffusion
-        - set(diffusion)
-    )
+    missing = required_diffusion - set(diffusion)
 
     if missing:
         raise ValueError(
@@ -54,16 +51,10 @@ def load_diffusion_config(
             "è supportato solo lo schedule lineare."
         )
 
-    beta_start = float(
-        schedule["beta_start"]
-    )
-    beta_end = float(
-        schedule["beta_end"]
-    )
+    beta_start = float(schedule["beta_start"])
+    beta_end = float(schedule["beta_end"])
 
-    num_timesteps = int(
-        diffusion["num_timesteps"]
-    )
+    num_timesteps = int(diffusion["num_timesteps"])
 
     if num_timesteps < 2:
         raise ValueError(
@@ -71,10 +62,7 @@ def load_diffusion_config(
         )
 
     if not (
-        0.0
-        < beta_start
-        < beta_end
-        < 1.0
+        0.0 < beta_start < beta_end < 1.0
     ):
         raise ValueError(
             "È richiesto "
@@ -116,6 +104,9 @@ def extract(
     timesteps: Tensor,
     reference: Tensor,
 ) -> Tensor:
+    # Seleziona un coefficiente per elemento del batch e lo rimodella
+    # per il broadcasting con un tensore immagine [B, C, H, W].
+
     if timesteps.dtype != torch.long:
         raise TypeError(
             "timesteps deve avere dtype torch.long."
@@ -131,10 +122,7 @@ def extract(
             "reference deve avere almeno 2 dimensioni."
         )
 
-    if (
-        timesteps.shape[0]
-        != reference.shape[0]
-    ):
+    if timesteps.shape[0] != reference.shape[0]:
         raise ValueError(
             "La dimensione batch dei timestep "
             "non coincide con quella del tensore."
@@ -152,12 +140,8 @@ def extract(
         )
 
     if timesteps.numel() > 0:
-        minimum = int(
-            timesteps.min().item()
-        )
-        maximum = int(
-            timesteps.max().item()
-        )
+        minimum = int(timesteps.min().item())
+        maximum = int(timesteps.max().item())
 
         if minimum < 0:
             raise IndexError(
@@ -189,6 +173,11 @@ def extract(
 
 
 class DDPMSchedule(nn.Module):
+    # Coefficienti del processo forward e della posteriore DDPM.
+
+    # I coefficienti sono buffer, non parametri apprendibili: servono
+    # per costruire x_t e per il sampling inverso, ma non devono ricevere
+    # gradienti né essere aggiornati dall'optimizer.
 
     def __init__(
         self,
@@ -204,24 +193,19 @@ class DDPMSchedule(nn.Module):
             )
 
         if not (
-            0.0
-            < beta_start
-            < beta_end
-            < 1.0
+            0.0 < beta_start < beta_end < 1.0
         ):
             raise ValueError(
                 "È richiesto "
                 "0 < beta_start < beta_end < 1."
             )
 
-        self.num_timesteps = int(
-            num_timesteps
-        )
+        self.num_timesteps = int(num_timesteps)
         self.beta_start = float(beta_start)
         self.beta_end = float(beta_end)
 
-        # I coefficienti vengono calcolati in
-        # float64 per ridurre l'errore numerico.
+        # Il calcolo iniziale in float64 limita gli errori di accumulo
+        # nel prodotto cumulativo delle alpha; i buffer finali sono float32.
         betas = torch.linspace(
             beta_start,
             beta_end,
@@ -251,79 +235,50 @@ class DDPMSchedule(nn.Module):
             alphas_cumprod
         )
 
-        sqrt_one_minus_alphas_cumprod = (
-            torch.sqrt(
-                1.0 - alphas_cumprod
-            )
+        sqrt_one_minus_alphas_cumprod = torch.sqrt(
+            1.0 - alphas_cumprod
         )
 
         sqrt_recip_alphas = torch.sqrt(
             1.0 / alphas
         )
 
-        sqrt_recip_alphas_cumprod = (
-            torch.sqrt(
-                1.0 / alphas_cumprod
-            )
+        sqrt_recip_alphas_cumprod = torch.sqrt(
+            1.0 / alphas_cumprod
         )
 
-        sqrt_recipm1_alphas_cumprod = (
-            torch.sqrt(
-                1.0
-                / alphas_cumprod
-                - 1.0
-            )
+        sqrt_recipm1_alphas_cumprod = torch.sqrt(
+            1.0 / alphas_cumprod - 1.0
         )
 
         posterior_variance = (
             betas
-            * (
-                1.0
-                - alphas_cumprod_previous
-            )
-            / (
-                1.0
-                - alphas_cumprod
-            )
+            * (1.0 - alphas_cumprod_previous)
+            / (1.0 - alphas_cumprod)
         )
 
-        posterior_log_variance_clipped = (
-            torch.log(
-                posterior_variance.clamp(
-                    min=1e-20
-                )
-            )
+        # A t=0 la varianza posteriore è zero. Il clamp permette
+        # di calcolarne il log in modo numericamente stabile.
+        posterior_log_variance_clipped = torch.log(
+            posterior_variance.clamp(min=1e-20)
         )
 
         posterior_mean_coefficient_1 = (
             betas
-            * torch.sqrt(
-                alphas_cumprod_previous
-            )
-            / (
-                1.0
-                - alphas_cumprod
-            )
+            * torch.sqrt(alphas_cumprod_previous)
+            / (1.0 - alphas_cumprod)
         )
 
         posterior_mean_coefficient_2 = (
-            (
-                1.0
-                - alphas_cumprod_previous
-            )
+            (1.0 - alphas_cumprod_previous)
             * torch.sqrt(alphas)
-            / (
-                1.0
-                - alphas_cumprod
-            )
+            / (1.0 - alphas_cumprod)
         )
 
         buffers = {
             "betas": betas,
             "alphas": alphas,
-            "alphas_cumprod": (
-                alphas_cumprod
-            ),
+            "alphas_cumprod": alphas_cumprod,
             "alphas_cumprod_previous": (
                 alphas_cumprod_previous
             ),
@@ -333,18 +288,14 @@ class DDPMSchedule(nn.Module):
             "sqrt_one_minus_alphas_cumprod": (
                 sqrt_one_minus_alphas_cumprod
             ),
-            "sqrt_recip_alphas": (
-                sqrt_recip_alphas
-            ),
+            "sqrt_recip_alphas": sqrt_recip_alphas,
             "sqrt_recip_alphas_cumprod": (
                 sqrt_recip_alphas_cumprod
             ),
             "sqrt_recipm1_alphas_cumprod": (
                 sqrt_recipm1_alphas_cumprod
             ),
-            "posterior_variance": (
-                posterior_variance
-            ),
+            "posterior_variance": posterior_variance,
             "posterior_log_variance_clipped": (
                 posterior_log_variance_clipped
             ),
@@ -369,9 +320,7 @@ class DDPMSchedule(nn.Module):
         config: dict,
     ) -> "DDPMSchedule":
         diffusion = config["diffusion"]
-        beta_schedule = diffusion[
-            "beta_schedule"
-        ]
+        beta_schedule = diffusion["beta_schedule"]
 
         return cls(
             num_timesteps=int(
@@ -390,10 +339,12 @@ class DDPMSchedule(nn.Module):
         x_start: Tensor,
         timesteps: Tensor,
         noise: Optional[Tensor] = None,
-        generator: Optional[
-            torch.Generator
-        ] = None,
+        generator: Optional[torch.Generator] = None,
     ) -> tuple[Tensor, Tensor]:
+        # Campiona x_t dalla distribuzione q(x_t | x_0).
+
+        # Se noise non viene fornito, viene generato rumore gaussiano;
+        # il generator opzionale rende il test o il sampling riproducibile.
         if not x_start.is_floating_point():
             raise TypeError(
                 "x_start deve essere floating point."
@@ -407,9 +358,7 @@ class DDPMSchedule(nn.Module):
 
         if noise is None:
             if generator is None:
-                noise = torch.randn_like(
-                    x_start
-                )
+                noise = torch.randn_like(x_start)
             else:
                 noise = torch.randn(
                     x_start.shape,
@@ -455,28 +404,44 @@ class DDPMSchedule(nn.Module):
         timesteps: Tensor,
         noise: Tensor,
     ) -> Tensor:
+        # Ricostruisce x_0 usando x_t e il rumore epsilon stimato.
+
+        # Questa è l'inversione algebrica del forward process e sarà
+        # utilizzata durante il sampling, una volta sostituito noise
+        # con la previsione del modello.
         if x_t.shape != noise.shape:
             raise ValueError(
-                "x_t e noise devono avere "
-                "la stessa shape."
+                "x_t e noise devono avere la stessa shape."
             )
 
-        reciprocal_signal = extract(
+        if not x_t.is_floating_point():
+            raise TypeError(
+                "x_t deve essere floating point."
+            )
+
+        if not noise.is_floating_point():
+            raise TypeError(
+                "noise deve essere floating point."
+            )
+
+        scale_x_t = extract(
             self.sqrt_recip_alphas_cumprod,
             timesteps,
             x_t,
         )
 
-        reciprocal_noise = extract(
+        scale_noise = extract(
             self.sqrt_recipm1_alphas_cumprod,
             timesteps,
             x_t,
         )
 
-        return (
-            reciprocal_signal * x_t
-            - reciprocal_noise * noise
+        x_start = (
+            scale_x_t * x_t
+            - scale_noise * noise
         )
+
+        return x_start
 
     def q_posterior(
         self,
@@ -484,10 +449,10 @@ class DDPMSchedule(nn.Module):
         x_t: Tensor,
         timesteps: Tensor,
     ) -> tuple[Tensor, Tensor, Tensor]:
+        # Calcola i parametri della posteriore q(x_{t-1} | x_t, x_0)
         if x_start.shape != x_t.shape:
             raise ValueError(
-                "x_start e x_t devono avere "
-                "la stessa shape."
+                "x_start e x_t devono avere la stessa shape."
             )
 
         coefficient_1 = extract(
@@ -524,3 +489,77 @@ class DDPMSchedule(nn.Module):
             posterior_variance,
             posterior_log_variance,
         )
+
+    def reverse_step(
+        self,
+        noisyimages: Tensor,
+        predicted_noise: Tensor,
+        timesteps: Tensor,
+        generator: Optional[torch.Generator] = None,
+        clip_denoised: bool = True,
+    ) -> tuple[Tensor, Tensor]:
+        # Esegue un singolo passo del reverse process DDPM.
+
+        # Restituisce:
+        # - x_{t-1}
+        # - x_0 ricostruito a partire da x_t e dal rumore predetto
+        if noisyimages.shape != predicted_noise.shape:
+            raise ValueError(
+                "noisyimages e predicted_noise devono "
+                "avere la stessa shape."
+            )
+
+        if timesteps.dtype != torch.long:
+            raise TypeError(
+                "timesteps deve avere dtype torch.long."
+            )
+
+        predicted_x_start = self.predict_start_from_noise(
+            x_t=noisyimages,
+            timesteps=timesteps,
+            noise=predicted_noise,
+        )
+
+        if clip_denoised:
+            predicted_x_start = predicted_x_start.clamp(
+                min=-1.0,
+                max=1.0,
+            )
+
+        (
+            posterior_mean,
+            posterior_variance,
+            _posterior_log_variance,
+        ) = self.q_posterior(
+            x_start=predicted_x_start,
+            x_t=noisyimages,
+            timesteps=timesteps,
+        )
+
+        if generator is None:
+            noise = torch.randn_like(noisyimages)
+        else:
+            noise = torch.randn(
+                noisyimages.shape,
+                dtype=noisyimages.dtype,
+                device=noisyimages.device,
+                generator=generator,
+            )
+
+        nonzero_mask = (
+            timesteps.ne(0)
+            .to(dtype=noisyimages.dtype)
+            .reshape(
+                noisyimages.shape[0],
+                *([1] * (noisyimages.ndim - 1)),
+            )
+        )
+
+        x_previous = (
+            posterior_mean
+            + nonzero_mask
+            * torch.sqrt(posterior_variance)
+            * noise
+        )
+
+        return x_previous, predicted_x_start

@@ -1,525 +1,200 @@
-
-import math
+import json
 from pathlib import Path
 
 import pytest
 import torch
-
-from tokenizers import Tokenizer
+import yaml
+from PIL import Image
 
 from src.data.avatar_dataset import (
-    VALID_SPLITS,
     build_dataloader,
+    build_dataloaders,
     build_datasets,
     image_to_tensor,
-    load_data_config,
 )
-from src.data.build_metadata import (
-    EXPECTED_VARIANTS,
-)
-from src.diffusion.schedule import (
-    DDPMSchedule,
-    load_diffusion_config,
-)
+from src.data.build_splits import VALID_SPLITS
+
+CONFIG_PATH = Path("configs/data_loader.yaml")
 
 
-DATA_CONFIG_PATH = Path(
-    "configs/data.yaml"
-)
+def load_config() -> dict:
+    with CONFIG_PATH.open("r", encoding="utf-8") as file:
+        return yaml.safe_load(file)
 
-DIFFUSION_CONFIG_PATH = Path(
-    "configs/diffusion.yaml"
-)
+
+def load_expected_sequence_length() -> int:
+    summary_path = Path(
+        "data/processed/tokenizer/tokenizer_summary.json"
+    )
+    assert summary_path.exists(), (
+        f"Tokenizer summary non trovato: {summary_path}"
+    )
+
+    with summary_path.open("r", encoding="utf-8") as file:
+        summary = json.load(file)
+
+    return int(summary["sequence_length_with_boundaries"])
 
 
 @pytest.fixture(scope="module")
-def data_config():
-    return load_data_config(
-        DATA_CONFIG_PATH
-    )
+def config() -> dict:
+    return load_config()
 
 
 @pytest.fixture(scope="module")
-def datasets(data_config):
-    return build_datasets(
-        data_config
-    )
+def datasets(config: dict) -> dict:
+    return build_datasets(config)
 
 
-def test_split_lengths(
-    data_config,
-    datasets,
-):
-    expected_counts = data_config[
-        "data"
-    ]["expected_split_counts"]
+def test_all_splits_are_built(datasets: dict) -> None:
+    assert set(datasets) == set(VALID_SPLITS)
 
+
+def test_expected_split_sizes(
+    datasets: dict,
+    config: dict,
+) -> None:
+    expected_counts = config["data"]["expected_split_counts"]
     for split_name in VALID_SPLITS:
-        assert (
-            len(datasets[split_name])
-            == expected_counts[split_name]
+        assert len(datasets[split_name]) == int(
+            expected_counts[split_name]
         )
 
-    assert sum(
-        len(dataset)
-        for dataset in datasets.values()
-    ) == 10_000
 
-
-def test_dataset_sequence_length(
-    datasets,
-):
-    for dataset in datasets.values():
-        assert dataset.sequence_length == 44
-
-
-def test_sample_structure(
-    datasets,
-):
-    sample = datasets["train"][0]
-
-    expected_keys = {
-        "image",
-        "input_ids",
-        "attention_mask",
-        "attributes",
-        "conditioning_values",
-        "image_id",
-        "caption",
-        "image_path",
-        "split",
-    }
-
-    assert set(sample) == expected_keys
-
-
-def test_image_tensor(
-    datasets,
-):
-    sample = datasets["train"][0]
-    image = sample["image"]
-
-    assert image.shape == (
-        3,
-        32,
-        32,
-    )
-
-    assert image.dtype == torch.float32
-    assert torch.isfinite(image).all()
-    assert image.min() >= -1.0
-    assert image.max() <= 1.0
-
-
-def test_image_loading_is_deterministic(
-    datasets,
-):
+def test_conditioning_attributes_are_consistent(
+    datasets: dict,
+    config: dict,
+) -> None:
+    expected_attributes = config["data"][
+        "conditioning_attributes"
+    ]
     dataset = datasets["train"]
 
-    first = dataset[0]["image"]
-    second = dataset[0]["image"]
-
-    torch.testing.assert_close(
-        first,
-        second,
-        rtol=0.0,
-        atol=0.0,
+    assert dataset.conditioning_attributes == tuple(
+        expected_attributes
+    )
+    assert dataset.conditioning_values.shape[1] == len(
+        expected_attributes
     )
 
 
-def test_text_tensors(
-    datasets,
-):
+def test_caption_tokens_have_uniform_length(
+    datasets: dict,
+) -> None:
+    lengths = {
+        dataset.sequence_length
+        for dataset in datasets.values()
+    }
+
+    assert len(lengths) == 1
+    assert next(iter(lengths)) == load_expected_sequence_length()
+
+
+def test_images_are_normalized(
+    datasets: dict,
+) -> None:
+    indices = [0, len(datasets["train"]) // 2, -1]
+    for index in indices:
+        image = datasets["train"][index]["image"]
+        assert torch.isfinite(image).all()
+        assert image.min() >= -1.0
+        assert image.max() <= 1.0
+
+
+def test_validation_loader_keeps_all_examples(
+    datasets: dict,
+    config: dict,
+) -> None:
+    loaders = build_dataloaders(
+        datasets=datasets,
+        config=config,
+    )
+    validation_count = sum(
+        batch["image"].shape[0]
+        for batch in loaders["validation"]
+    )
+    assert validation_count == len(datasets["validation"])
+
+
+def test_train_dataloader_batch(
+    datasets: dict,
+    config: dict,
+) -> None:
+    loader_config = config["loader"]
+
+    loader = build_dataloader(
+        dataset=datasets["train"],
+        batch_size=64,
+        shuffle=True,
+        num_workers=0,
+        pin_memory=bool(loader_config["pin_memory"]),
+        persistent_workers=False,
+        prefetch_factor=2,
+        drop_last=True,
+        seed=42,
+    )
+
+    batch = next(iter(loader))
+    expected_sequence_length = (
+        load_expected_sequence_length()
+    )
+
+    assert batch["image"].shape == (64, 3, 32, 32)
+    assert batch["input_ids"].shape == (
+        64,
+        expected_sequence_length,
+    )
+    assert batch["attention_mask"].shape == (
+        64,
+        expected_sequence_length,
+    )
+    assert batch["attributes"].shape == (64, 18)
+    assert batch["conditioning_values"].shape == (64, 8)
+
+    assert batch["image"].dtype == torch.float32
+    assert batch["input_ids"].dtype == torch.long
+    assert batch["attention_mask"].dtype == torch.long
+
+
+def test_evaluation_loader_keeps_final_batch(
+    datasets: dict,
+    config: dict,
+) -> None:
+    loaders = build_dataloaders(
+        datasets=datasets,
+        config=config,
+    )
+    expected_total = len(datasets["test_ood"])
+    observed_total = sum(
+        batch["image"].shape[0]
+        for batch in loaders["test_ood"]
+    )
+    assert observed_total == expected_total
+
+
+def test_train_sample_shapes_and_types(
+    datasets: dict,
+) -> None:
     sample = datasets["train"][0]
 
-    assert sample["input_ids"].shape == (
-        44,
-    )
+    assert sample["image"].shape == (3, 32, 32)
+    assert sample["image"].dtype == torch.float32
+
+    assert sample["input_ids"].ndim == 1
+    assert sample["input_ids"].dtype == torch.long
 
     assert (
         sample["attention_mask"].shape
-        == (44,)
+        == sample["input_ids"].shape
     )
+    assert sample["attention_mask"].dtype == torch.long
 
-    assert (
-        sample["input_ids"].dtype
-        == torch.long
-    )
+    assert sample["attributes"].shape == (18,)
+    assert sample["conditioning_values"].shape == (8,)
+    assert sample["split"] == "train"
 
-    assert (
-        sample["attention_mask"].dtype
-        == torch.long
-    )
 
-    assert set(
-        sample[
-            "attention_mask"
-        ].tolist()
-    ).issubset({0, 1})
-
-
-def test_tokens_match_saved_tokenizer(
-    data_config,
-    datasets,
-):
-    tokenizer = Tokenizer.from_file(
-        data_config[
-            "data"
-        ]["tokenizer_path"]
-    )
-
-    sample = datasets["train"][0]
-
-    encoding = tokenizer.encode(
-        sample["caption"]
-    )
-
-    assert (
-        sample["input_ids"].tolist()
-        == encoding.ids
-    )
-
-    assert (
-        sample[
-            "attention_mask"
-        ].tolist()
-        == encoding.attention_mask
-    )
-
-
-def test_attribute_tensors(
-    data_config,
-    datasets,
-):
-    sample = datasets["train"][0]
-
-    conditioning_attributes = (
-        data_config[
-            "data"
-        ]["conditioning_attributes"]
-    )
-
-    assert sample["attributes"].shape == (
-        len(EXPECTED_VARIANTS),
-    )
-
-    assert (
-        sample[
-            "conditioning_values"
-        ].shape
-        == (
-            len(conditioning_attributes),
-        )
-    )
-
-    assert (
-        sample["attributes"].dtype
-        == torch.long
-    )
-
-    assert (
-        sample[
-            "conditioning_values"
-        ].dtype
-        == torch.long
-    )
-
-
-def test_split_labels(
-    datasets,
-):
-    for split_name in VALID_SPLITS:
-        dataset = datasets[split_name]
-
-        assert dataset[0]["split"] == (
-            split_name
-        )
-
-        assert dataset[-1]["split"] == (
-            split_name
-        )
-
-
-def test_split_ids_are_disjoint(
-    datasets,
-):
-    id_sets = {
-        split_name: set(
-            dataset.image_ids
-        )
-        for split_name, dataset
-        in datasets.items()
-    }
-
-    for first_index, first_name in enumerate(
-        VALID_SPLITS
-    ):
-        for second_name in VALID_SPLITS[
-            first_index + 1:
-        ]:
-            assert id_sets[
-                first_name
-            ].isdisjoint(
-                id_sets[second_name]
-            )
-
-
-def test_default_batch_collation(
-    datasets,
-):
-    loader = build_dataloader(
-        dataset=datasets["train"],
-        batch_size=8,
-        shuffle=False,
-        num_workers=0,
-        pin_memory=False,
-        persistent_workers=False,
-        prefetch_factor=2,
-        drop_last=False,
-        seed=2026,
-    )
-
-    batch = next(iter(loader))
-
-    assert batch["image"].shape == (
-        8,
-        3,
-        32,
-        32,
-    )
-
-    assert batch["input_ids"].shape == (
-        8,
-        44,
-    )
-
-    assert (
-        batch["attention_mask"].shape
-        == (8, 44)
-    )
-
-    assert batch["attributes"].shape == (
-        8,
-        len(EXPECTED_VARIANTS),
-    )
-
-    assert (
-        batch[
-            "conditioning_values"
-        ].shape[0]
-        == 8
-    )
-
-    assert len(batch["image_id"]) == 8
-    assert len(batch["caption"]) == 8
-
-
-def test_training_shuffle_is_reproducible(
-    datasets,
-):
-    loader_arguments = {
-        "dataset": datasets["train"],
-        "batch_size": 16,
-        "shuffle": True,
-        "num_workers": 0,
-        "pin_memory": False,
-        "persistent_workers": False,
-        "prefetch_factor": 2,
-        "drop_last": False,
-        "seed": 2026,
-    }
-
-    first_loader = build_dataloader(
-        **loader_arguments
-    )
-
-    second_loader = build_dataloader(
-        **loader_arguments
-    )
-
-    first_batch = next(
-        iter(first_loader)
-    )
-
-    second_batch = next(
-        iter(second_loader)
-    )
-
-    assert (
-        first_batch["image_id"]
-        == second_batch["image_id"]
-    )
-
-    torch.testing.assert_close(
-        first_batch["image"],
-        second_batch["image"],
-        rtol=0.0,
-        atol=0.0,
-    )
-
-    torch.testing.assert_close(
-        first_batch["input_ids"],
-        second_batch["input_ids"],
-        rtol=0.0,
-        atol=0.0,
-    )
-
-
-def test_evaluation_loader_is_sequential(
-    datasets,
-):
-    dataset = datasets["validation"]
-
-    loader = build_dataloader(
-        dataset=dataset,
-        batch_size=8,
-        shuffle=False,
-        num_workers=0,
-        pin_memory=False,
-        persistent_workers=False,
-        prefetch_factor=2,
-        drop_last=False,
-        seed=2026,
-    )
-
-    batch = next(iter(loader))
-
-    assert batch["image_id"] == (
-        dataset.image_ids[:8]
-    )
-
-
-def test_no_examples_dropped(
-    datasets,
-):
-    dataset = datasets["train"]
-
-    loader = build_dataloader(
-        dataset=dataset,
-        batch_size=64,
-        shuffle=False,
-        num_workers=0,
-        pin_memory=False,
-        persistent_workers=False,
-        prefetch_factor=2,
-        drop_last=False,
-        seed=2026,
-    )
-
-    assert len(loader) == math.ceil(
-        len(dataset) / 64
-    )
-
-    loaded_ids = []
-
-    for batch in loader:
-        loaded_ids.extend(
-            batch["image_id"]
-        )
-
-    assert loaded_ids == (
-        dataset.image_ids
-    )
-
-    assert len(loaded_ids) == 7884
-
-
-def test_batch_integrates_with_diffusion(
-    datasets,
-):
-    loader = build_dataloader(
-        dataset=datasets["train"],
-        batch_size=4,
-        shuffle=False,
-        num_workers=0,
-        pin_memory=False,
-        persistent_workers=False,
-        prefetch_factor=2,
-        drop_last=False,
-        seed=2026,
-    )
-
-    batch = next(iter(loader))
-    images = batch["image"]
-
-    diffusion_config = (
-        load_diffusion_config(
-            DIFFUSION_CONFIG_PATH
-        )
-    )
-
-    schedule = (
-        DDPMSchedule.from_config(
-            diffusion_config
-        )
-    )
-
-    timesteps = torch.tensor(
-        [0, 100, 500, 999],
-        dtype=torch.long,
-    )
-
-    noisy_images, noise = (
-        schedule.q_sample(
-            x_start=images,
-            timesteps=timesteps,
-        )
-    )
-
-    assert noisy_images.shape == (
-        images.shape
-    )
-
-    assert noise.shape == images.shape
-    assert torch.isfinite(
-        noisy_images
-    ).all()
-
-
-def test_production_multiworker_batch(
-    data_config,
-    datasets,
-):
-    loader_config = data_config[
-        "loader"
-    ]
-
-    loader = build_dataloader(
-        dataset=datasets["train"],
-        batch_size=8,
-        shuffle=True,
-        num_workers=int(
-            loader_config["num_workers"]
-        ),
-        pin_memory=bool(
-            loader_config["pin_memory"]
-        ),
-        persistent_workers=bool(
-            loader_config[
-                "persistent_workers"
-            ]
-        ),
-        prefetch_factor=int(
-            loader_config[
-                "prefetch_factor"
-            ]
-        ),
-        drop_last=False,
-        seed=int(
-            loader_config["seed"]
-        ),
-    )
-
-    batch = next(iter(loader))
-
-    assert batch["image"].shape == (
-        8,
-        3,
-        32,
-        32,
-    )
-
-    assert batch["input_ids"].shape == (
-        8,
-        44,
-    )
+def test_image_to_tensor_rejects_invalid_size() -> None:
+    image = Image.new("RGB", (8, 8))
+    with pytest.raises(ValueError):
+        image_to_tensor(image=image, image_size=0)

@@ -7,6 +7,8 @@ compositional_ood:
   second_value: 3
   expected_count: 144
 
+  # Documentiamo il protocollo usato nell'audit per selezionare
+  # una combinazione rappresentativa e non eccessivamente rara.
   selection_protocol:
     candidate_pair: hair_color__face_shape
     criterion: closest_to_median_combination_count
@@ -17,6 +19,9 @@ ordinary_split:
   train_ratio: 0.8
   validation_ratio: 0.1
   test_ratio: 0.1
+
+  # La distribuzione delle combinazioni osservate viene mantenuta
+  # nei tre split ordinari tramite stratificazione congiunta.
   stratify_by:
     - hair_color
     - face_shape

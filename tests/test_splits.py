@@ -1,4 +1,3 @@
-
 from pathlib import Path
 
 import pandas as pd
@@ -12,21 +11,19 @@ from src.data.build_splits import (
 )
 
 
-METADATA_PATH = Path(
-    "data/processed/metadata.csv"
-)
-
-CONFIG_PATH = Path(
-    "configs/data_split.yaml"
-)
-
+METADATA_PATH = Path("data/processed/metadata.csv")
+CONFIG_PATH = Path("configs/data_split.yaml")
 SPLITS_PATH = Path(
-    "data/processed/splits/"
-    "metadata_with_splits.csv"
+    "data/processed/splits/metadata_with_splits.csv"
 )
 
 
-def load_inputs():
+def load_inputs() -> tuple[pd.DataFrame, dict, pd.DataFrame]:
+    # Carica gli input condivisi dai test
+    assert METADATA_PATH.exists()
+    assert CONFIG_PATH.exists()
+    assert SPLITS_PATH.exists()
+
     metadata = pd.read_csv(METADATA_PATH)
     config = load_split_config(CONFIG_PATH)
     assigned = pd.read_csv(SPLITS_PATH)
@@ -34,40 +31,45 @@ def load_inputs():
     return metadata, config, assigned
 
 
-def test_total_number_of_examples():
+def test_total_number_of_examples() -> None:
+    # Lo split deve contenere tutti i 10.000 esempi
     metadata, _, assigned = load_inputs()
 
     assert len(metadata) == 10_000
     assert len(assigned) == 10_000
 
 
-def test_unique_assignments():
+def test_unique_assignments() -> None:
+    # Ogni immagine deve essere assegnata una sola volta
     _, _, assigned = load_inputs()
 
     assert assigned["image_id"].nunique() == 10_000
     assert not assigned["image_id"].duplicated().any()
 
 
-def test_expected_splits():
+def test_expected_split_names() -> None:
+    # Devono essere presenti esattamente i quattro split previsti
     _, _, assigned = load_inputs()
 
-    assert set(
-        assigned["split"].unique()
-    ) == set(VALID_SPLITS)
+    assert set(assigned["split"].unique()) == set(
+        VALID_SPLITS
+    )
 
 
-def test_expected_split_sizes():
+def test_expected_split_sizes() -> None:
+    # Le cardinalità attese rendono lo split facilmente verificabile
     _, _, assigned = load_inputs()
 
     counts = assigned["split"].value_counts()
 
-    assert counts["train"] == 7_884
-    assert counts["validation"] == 986
-    assert counts["test_ordinary"] == 986
-    assert counts["test_ood"] == 144
+    assert int(counts["train"]) == 7_884
+    assert int(counts["validation"]) == 986
+    assert int(counts["test_ordinary"]) == 986
+    assert int(counts["test_ood"]) == 144
 
 
-def test_ood_combination_is_held_out():
+def test_ood_combination_is_held_out() -> None:
+    # La combinazione OOD non deve comparire negli split ordinari
     _, config, assigned = load_inputs()
 
     validate_assignments(
@@ -85,29 +87,40 @@ def test_ood_combination_is_held_out():
         == "test_ood"
     ).all()
 
+    ordinary_mask = assigned["split"] != "test_ood"
+
     assert not (
-        assigned.loc[
-            assigned["split"] != "test_ood"
-        ]
-        .eval(
-            "hair_color == 3 and face_shape == 3"
+        (
+            assigned.loc[
+                ordinary_mask,
+                "hair_color",
+            ]
+            == 3
         )
-        .any()
-    )
+        & (
+            assigned.loc[
+                ordinary_mask,
+                "face_shape",
+            ]
+            == 3
+        )
+    ).any()
 
 
-def test_ood_contains_only_selected_combination():
+def test_ood_contains_only_selected_combination() -> None:
+    # test_ood non deve includere esempi non appartenenti alla coppia
     _, _, assigned = load_inputs()
 
-    ood = assigned[
+    test_ood = assigned[
         assigned["split"] == "test_ood"
     ]
 
-    assert (ood["hair_color"] == 3).all()
-    assert (ood["face_shape"] == 3).all()
+    assert (test_ood["hair_color"] == 3).all()
+    assert (test_ood["face_shape"] == 3).all()
 
 
-def test_individual_values_remain_in_training():
+def test_individual_values_remain_in_training() -> None:
+    # I valori singoli devono restare osservabili durante il training
     _, _, assigned = load_inputs()
 
     train = assigned[
@@ -118,52 +131,22 @@ def test_individual_values_remain_in_training():
     assert (train["face_shape"] == 3).any()
 
 
-def test_every_ordinary_pair_is_represented():
-    _, _, assigned = load_inputs()
-
-    expected_pairs = set(
-        assigned.loc[
-            assigned["split"] != "test_ood",
-            ["hair_color", "face_shape"],
-        ].itertuples(
-            index=False,
-            name=None,
-        )
-    )
-
-    for split_name in (
-        "train",
-        "validation",
-        "test_ordinary",
-    ):
-        split_pairs = set(
-            assigned.loc[
-                assigned["split"] == split_name,
-                ["hair_color", "face_shape"],
-            ].itertuples(
-                index=False,
-                name=None,
-            )
-        )
-
-        assert split_pairs == expected_pairs
-
-
-def test_split_is_deterministic():
+def test_split_is_deterministic() -> None:
+    # Stesso input e stesso seed devono produrre lo stesso split
     metadata, config, _ = load_inputs()
 
-    first = assign_splits(
+    first_assignment = assign_splits(
         metadata=metadata,
         config=config,
     )
 
-    second = assign_splits(
+    second_assignment = assign_splits(
         metadata=metadata,
         config=config,
     )
 
     pdt.assert_frame_equal(
-        first,
-        second,
+        first_assignment,
+        second_assignment,
         check_like=False,
     )

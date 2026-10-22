@@ -5,19 +5,16 @@ import json
 from pathlib import Path
 
 import pandas as pd
-
+import yaml
 from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
 from tokenizers.pre_tokenizers import Whitespace
 from tokenizers.processors import TemplateProcessing
 from tokenizers.trainers import WordLevelTrainer
 
-from src.data.build_captions import (
-    load_text_config,
-)
-
 
 def compute_sha256(path: Path) -> str:
+    # Calcola lo SHA-256 di un file binario
     digest = hashlib.sha256()
 
     with path.open("rb") as file:
@@ -30,75 +27,112 @@ def compute_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def compute_text_sha256(
-    image_ids: list[str],
-    captions: list[str],
-) -> str:
-    digest = hashlib.sha256()
+def load_text_config(config_path: Path) -> dict:
+    # Carica e valida la configurazione per caption e tokenizer
+    with Path(config_path).open(
+        "r",
+        encoding="utf-8",
+    ) as file:
+        config = yaml.safe_load(file)
 
-    for image_id, caption in zip(
-        image_ids,
-        captions,
-    ):
-        line = (
-            f"{image_id}\t{caption}\n"
-        )
-        digest.update(
-            line.encode("utf-8")
-        )
+    required_sections = {"caption", "tokenizer"}
 
-    return digest.hexdigest()
-
-
-def build_tokenizer(
-    captioned: pd.DataFrame,
-    config: dict,
-) -> tuple[Tokenizer, dict]:
-    required_columns = {
-        "image_id",
-        "split",
-        "caption",
-    }
-
-    missing_columns = (
-        required_columns
-        - set(captioned.columns)
-    )
-
-    if missing_columns:
+    missing_sections = required_sections - set(config)
+    if missing_sections:
         raise ValueError(
-            "Colonne mancanti: "
-            f"{sorted(missing_columns)}"
-        )
-
-    training = (
-        captioned[
-            captioned["split"] == "train"
-        ]
-        .sort_values("image_id")
-        .reset_index(drop=True)
-    )
-
-    if training.empty:
-        raise ValueError(
-            "Training split vuoto."
+            "Sezioni mancanti nella configurazione: "
+            f"{sorted(missing_sections)}"
         )
 
     tokenizer_config = config["tokenizer"]
-    special = tokenizer_config[
-        "special_tokens"
-    ]
+
+    required_tokenizer_keys = {
+        "model",
+        "pre_tokenizer",
+        "min_frequency",
+        "special_tokens",
+    }
+
+    missing_tokenizer_keys = (
+        required_tokenizer_keys
+        - set(tokenizer_config)
+    )
+
+    if missing_tokenizer_keys:
+        raise ValueError(
+            "Parametri tokenizer mancanti: "
+            f"{sorted(missing_tokenizer_keys)}"
+        )
+
+    if tokenizer_config["model"] != "word_level":
+        raise ValueError(
+            "È supportato solo tokenizer.model='word_level'."
+        )
+
+    if tokenizer_config["pre_tokenizer"] != "whitespace":
+        raise ValueError(
+            "È supportato solo "
+            "tokenizer.pre_tokenizer='whitespace'."
+        )
+
+    if int(tokenizer_config["min_frequency"]) < 1:
+        raise ValueError(
+            "tokenizer.min_frequency deve essere almeno 1."
+        )
+
+    special_tokens = tokenizer_config["special_tokens"]
+
+    required_special_tokens = {
+        "unk",
+        "pad",
+        "sos",
+        "eos",
+    }
+
+    missing_special_tokens = (
+        required_special_tokens - set(special_tokens)
+    )
+
+    if missing_special_tokens:
+        raise ValueError(
+            "Token speciali mancanti: "
+            f"{sorted(missing_special_tokens)}"
+        )
+
+    token_values = list(special_tokens.values())
+
+    if len(token_values) != len(set(token_values)):
+        raise ValueError(
+            "I token speciali devono essere tutti distinti."
+        )
+
+    return config
+
+
+def build_tokenizer(
+    train_captions: list[str],
+    config: dict,
+) -> tuple[Tokenizer, dict]:
+    # Addestra il tokenizer esclusivamente sulle caption train,
+    # poi applica SOS, EOS, truncation e padding.
+    if not train_captions:
+        raise ValueError(
+            "Nessuna caption di training disponibile."
+        )
+
+    tokenizer_config = config["tokenizer"]
+    special_tokens = tokenizer_config["special_tokens"]
 
     ordered_special_tokens = [
-        special["unk"],
-        special["pad"],
-        special["sos"],
-        special["eos"],
+        special_tokens["unk"],
+        special_tokens["pad"],
+        special_tokens["sos"],
+        special_tokens["eos"],
     ]
 
     tokenizer = Tokenizer(
         WordLevel(
-            unk_token=special["unk"]
+            unk_token=special_tokens["unk"]
         )
     )
 
@@ -106,211 +140,185 @@ def build_tokenizer(
 
     trainer = WordLevelTrainer(
         min_frequency=int(
-            tokenizer_config[
-                "min_frequency"
-            ]
+            tokenizer_config["min_frequency"]
         ),
-        special_tokens=(
-            ordered_special_tokens
-        ),
+        special_tokens=ordered_special_tokens,
         show_progress=True,
     )
 
-    training_captions = (
-        training["caption"]
-        .astype(str)
-        .tolist()
-    )
-
+    # Il vocabolario viene costruito solo dal training split:
+    # validation, test ordinary e OOD non contribuiscono.
     tokenizer.train_from_iterator(
-        training_captions,
+        train_captions,
         trainer=trainer,
-        length=len(training_captions),
+        length=len(train_captions),
     )
 
-    special_ids = {
+    special_token_ids = {
         name: tokenizer.token_to_id(token)
-        for name, token in special.items()
+        for name, token in special_tokens.items()
     }
 
-    missing_special_tokens = [
+    missing_ids = [
         name
-        for name, token_id
-        in special_ids.items()
+        for name, token_id in special_token_ids.items()
         if token_id is None
     ]
 
-    if missing_special_tokens:
+    if missing_ids:
         raise RuntimeError(
-            "Token speciali mancanti: "
-            f"{missing_special_tokens}"
+            "Token speciali senza ID: "
+            f"{missing_ids}"
         )
 
-    tokenizer.post_processor = (
-        TemplateProcessing(
-            single=(
-                f"{special['sos']} "
-                f"$A "
-                f"{special['eos']}"
-            ),
-            special_tokens=[
-                (
-                    special["sos"],
-                    special_ids["sos"],
-                ),
-                (
-                    special["eos"],
-                    special_ids["eos"],
-                ),
-            ],
-        )
-    )
-
-    training_lengths = [
+    # Calcoliamo la massima lunghezza della sola caption,
+    # prima di aggiungere i delimitatori SOS ed EOS.
+    raw_lengths = [
         len(
             tokenizer.encode(
-                caption
+                caption,
+                add_special_tokens=False,
             ).ids
         )
-        for caption in training_captions
+        for caption in train_captions
     ]
 
-    max_length = max(training_lengths)
+    max_train_length_without_boundaries = max(
+        raw_lengths
+    )
 
+    # Ogni sequenza avrà: [SOS] + caption + [EOS].
+    maximum_sequence_length = (
+        max_train_length_without_boundaries + 2
+    )
+
+    # Aggiunge automaticamente SOS e EOS a ogni caption.
+    tokenizer.post_processor = TemplateProcessing(
+        single=(
+            f"{special_tokens['sos']} "
+            f"$A "
+            f"{special_tokens['eos']}"
+        ),
+        special_tokens=[
+            (
+                special_tokens["sos"],
+                special_token_ids["sos"],
+            ),
+            (
+                special_tokens["eos"],
+                special_token_ids["eos"],
+            ),
+        ],
+    )
+
+    # Impone una lunghezza fissa per i batch del Transformer.
     tokenizer.enable_truncation(
-        max_length=max_length
+        max_length=maximum_sequence_length
     )
 
     tokenizer.enable_padding(
-        length=max_length,
-        pad_id=special_ids["pad"],
-        pad_token=special["pad"],
+        length=maximum_sequence_length,
+        pad_id=special_token_ids["pad"],
+        pad_token=special_tokens["pad"],
     )
 
-    unknown_counts = {}
+    return tokenizer, {
+        "max_train_length_without_boundaries": (
+            max_train_length_without_boundaries
+        ),
+        "maximum_sequence_length": (
+            maximum_sequence_length
+        ),
+        "special_token_ids": special_token_ids,
+    }
 
-    for split_name, frame in captioned.groupby(
-        "split"
-    ):
-        unknown_counts[split_name] = sum(
-            encoding.ids.count(
-                special_ids["unk"]
-            )
-            for encoding in tokenizer.encode_batch(
-                frame["caption"]
-                .astype(str)
-                .tolist()
-            )
+
+def build_summary(
+    tokenizer: Tokenizer,
+    captioned: pd.DataFrame,
+    train_captions: list[str],
+    special_tokens: dict,
+    tokenizer_info: dict,
+) -> dict:
+    # Crea un summary verificabile degli artefatti tokenizer
+    encoded_train = tokenizer.encode_batch(
+        train_captions
+    )
+
+    encoded_lengths = {
+        len(encoding.ids)
+        for encoding in encoded_train
+    }
+
+    if encoded_lengths != {
+        tokenizer_info["maximum_sequence_length"]
+    }:
+        raise RuntimeError(
+            "Le sequenze train non hanno lunghezza fissa. "
+            f"Osservate: {sorted(encoded_lengths)}"
         )
 
-    summary = {
+    unknown_token_id = tokenizer_info[
+        "special_token_ids"
+    ]["unk"]
+
+    unknown_token_counts = {}
+
+    for split_name, split_frame in captioned.groupby(
+        "split"
+    ):
+        encodings = tokenizer.encode_batch(
+            split_frame["caption"]
+            .astype(str)
+            .tolist()
+        )
+
+        unknown_token_counts[split_name] = sum(
+            encoding.ids.count(unknown_token_id)
+            for encoding in encodings
+        )
+
+    return {
         "tokenizer_model": "WordLevel",
         "pre_tokenizer": "Whitespace",
+        "num_train_captions": int(
+            len(train_captions)
+        ),
         "training_examples": int(
-            len(training)
+            len(train_captions)
         ),
         "vocabulary_size": int(
             tokenizer.get_vocab_size()
         ),
-        "maximum_sequence_length": int(
-            max_length
-        ),
-        "minimum_training_sequence_length": int(
-            min(training_lengths)
-        ),
-        "maximum_training_sequence_length": int(
-            max(training_lengths)
-        ),
-        "special_tokens": special,
-        "special_token_ids": special_ids,
-        "unknown_token_counts": {
-            key: int(value)
-            for key, value
-            in unknown_counts.items()
+        "special_tokens": special_tokens,
+        "special_token_ids": {
+            name: int(token_id)
+            for name, token_id in tokenizer_info[
+                "special_token_ids"
+            ].items()
         },
-        "training_captions_sha256": (
-            compute_text_sha256(
-                image_ids=training[
-                    "image_id"
-                ].astype(str).tolist(),
-                captions=training_captions,
-            )
+        "max_train_length_without_boundaries": int(
+            tokenizer_info[
+                "max_train_length_without_boundaries"
+            ]
         ),
+        "maximum_sequence_length": int(
+            tokenizer_info["maximum_sequence_length"]
+        ),
+        # Chiave mantenuta per compatibilità con i test
+        # e il DataLoader già costruiti nel progetto.
+        "sequence_length_with_boundaries": int(
+            tokenizer_info["maximum_sequence_length"]
+        ),
+        "unknown_token_counts": {
+            split_name: int(count)
+            for split_name, count
+            in unknown_token_counts.items()
+        },
     }
 
-    return tokenizer, summary
 
-
-def save_tokenizer(
-    tokenizer: Tokenizer,
-    summary: dict,
-    output_dir: Path,
-) -> dict:
-    output_dir.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    tokenizer_path = (
-        output_dir / "tokenizer.json"
-    )
-
-    tokenizer.save(
-        str(tokenizer_path)
-    )
-
-    vocabulary = tokenizer.get_vocab()
-
-    vocabulary_by_id = dict(
-        sorted(
-            vocabulary.items(),
-            key=lambda item: item[1],
-        )
-    )
-
-    vocabulary_path = (
-        output_dir / "vocabulary.json"
-    )
-
-    with vocabulary_path.open(
-        "w",
-        encoding="utf-8",
-    ) as file:
-        json.dump(
-            vocabulary_by_id,
-            file,
-            indent=2,
-            ensure_ascii=False,
-        )
-
-    summary["tokenizer_sha256"] = (
-        compute_sha256(tokenizer_path)
-    )
-
-    summary["vocabulary_sha256"] = (
-        compute_sha256(vocabulary_path)
-    )
-
-    summary_path = (
-        output_dir
-        / "tokenizer_summary.json"
-    )
-
-    with summary_path.open(
-        "w",
-        encoding="utf-8",
-    ) as file:
-        json.dump(
-            summary,
-            file,
-            indent=2,
-            sort_keys=True,
-        )
-
-    return summary
-
-
-def parse_args():
+def main() -> None:
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
@@ -338,30 +346,90 @@ def parse_args():
         ),
     )
 
-    return parser.parse_args()
+    args = parser.parse_args()
 
+    if not args.captions.is_file():
+        raise FileNotFoundError(
+            f"File caption non trovato: {args.captions}"
+        )
 
-def main():
-    args = parse_args()
+    captioned = pd.read_csv(args.captions)
 
-    captioned = pd.read_csv(
-        args.captions
+    required_columns = {
+        "image_id",
+        "split",
+        "caption",
+    }
+
+    missing_columns = (
+        required_columns - set(captioned.columns)
     )
 
-    config = load_text_config(
-        args.config
+    if missing_columns:
+        raise ValueError(
+            "Colonne mancanti nel file caption: "
+            f"{sorted(missing_columns)}"
+        )
+
+    config = load_text_config(args.config)
+
+    train_captions = (
+        captioned.loc[
+            captioned["split"] == "train",
+            "caption",
+        ]
+        .astype(str)
+        .tolist()
     )
 
-    tokenizer, summary = build_tokenizer(
-        captioned=captioned,
+    tokenizer, tokenizer_info = build_tokenizer(
+        train_captions=train_captions,
         config=config,
     )
 
-    summary = save_tokenizer(
-        tokenizer=tokenizer,
-        summary=summary,
-        output_dir=args.output_dir,
+    args.output_dir.mkdir(
+        parents=True,
+        exist_ok=True,
     )
+
+    tokenizer_path = (
+        args.output_dir / "tokenizer.json"
+    )
+
+    # Il salvataggio avviene soltanto dopo aver configurato
+    # post-processing, truncation e padding.
+    tokenizer.save(str(tokenizer_path))
+
+    special_tokens = config["tokenizer"][
+        "special_tokens"
+    ]
+
+    summary = build_summary(
+        tokenizer=tokenizer,
+        captioned=captioned,
+        train_captions=train_captions,
+        special_tokens=special_tokens,
+        tokenizer_info=tokenizer_info,
+    )
+
+    summary["tokenizer_sha256"] = compute_sha256(
+        tokenizer_path
+    )
+
+    summary_path = (
+        args.output_dir / "tokenizer_summary.json"
+    )
+
+    with summary_path.open(
+        "w",
+        encoding="utf-8",
+    ) as file:
+        json.dump(
+            summary,
+            file,
+            indent=2,
+            sort_keys=True,
+        )
 
     print(
         json.dumps(

@@ -1,4 +1,3 @@
-
 import argparse
 import hashlib
 import json
@@ -20,6 +19,7 @@ VALID_SPLITS = (
 
 
 def compute_sha256(path: Path) -> str:
+    # Calcola il checksum SHA-256 di un file
     digest = hashlib.sha256()
 
     with path.open("rb") as file:
@@ -33,10 +33,8 @@ def compute_sha256(path: Path) -> str:
 
 
 def load_split_config(config_path: Path) -> dict:
-    with config_path.open(
-        "r",
-        encoding="utf-8",
-    ) as file:
+    # Carica e valida la configurazione degli split
+    with config_path.open("r", encoding="utf-8") as file:
         config = yaml.safe_load(file)
 
     required_sections = {
@@ -45,9 +43,7 @@ def load_split_config(config_path: Path) -> dict:
         "ordinary_split",
     }
 
-    missing_sections = (
-        required_sections - set(config)
-    )
+    missing_sections = required_sections - set(config)
 
     if missing_sections:
         raise ValueError(
@@ -76,6 +72,7 @@ def validate_metadata(
     metadata: pd.DataFrame,
     config: dict,
 ) -> None:
+    # Verifica che i metadata contengano le colonne necessarie
     ood_config = config["compositional_ood"]
 
     required_columns = {
@@ -96,14 +93,10 @@ def validate_metadata(
         )
 
     if metadata.empty:
-        raise ValueError(
-            "Il metadata è vuoto."
-        )
+        raise ValueError("Il metadata è vuoto.")
 
     if metadata["image_id"].isna().any():
-        raise ValueError(
-            "Sono presenti image_id mancanti."
-        )
+        raise ValueError("Sono presenti image_id mancanti.")
 
     if metadata["image_id"].duplicated().any():
         duplicate_ids = metadata.loc[
@@ -121,6 +114,7 @@ def make_stratum(
     dataframe: pd.DataFrame,
     columns: list[str],
 ) -> pd.Series:
+    # Costruisce un'etichetta congiunta per la stratificazione
     return dataframe[columns].astype(str).agg(
         "__".join,
         axis=1,
@@ -131,8 +125,11 @@ def assign_splits(
     metadata: pd.DataFrame,
     config: dict,
 ) -> pd.DataFrame:
+    # Assegna ogni esempio a train, validation, test ordinario o OOD
     validate_metadata(metadata, config)
 
+    # L'ordinamento canonico evita che l'ordine originario del CSV
+    # influenzi le assegnazioni riproducibili.
     metadata = (
         metadata
         .sort_values("image_id")
@@ -144,33 +141,21 @@ def assign_splits(
     ood_config = config["compositional_ood"]
     ordinary_config = config["ordinary_split"]
 
-    first_attribute = (
-        ood_config["first_attribute"]
-    )
-    second_attribute = (
-        ood_config["second_attribute"]
-    )
+    first_attribute = ood_config["first_attribute"]
+    second_attribute = ood_config["second_attribute"]
 
-    first_value = int(
-        ood_config["first_value"]
-    )
-    second_value = int(
-        ood_config["second_value"]
-    )
+    first_value = int(ood_config["first_value"])
+    second_value = int(ood_config["second_value"])
 
     expected_ood_count = int(
         ood_config["expected_count"]
     )
 
+    # La combinazione selezionata viene sottratta integralmente
+    # dagli split ordinari e costituisce test_ood.
     ood_mask = (
-        (
-            metadata[first_attribute]
-            == first_value
-        )
-        & (
-            metadata[second_attribute]
-            == second_value
-        )
+        (metadata[first_attribute] == first_value)
+        & (metadata[second_attribute] == second_value)
     )
 
     ood = metadata.loc[ood_mask].copy()
@@ -184,14 +169,14 @@ def assign_splits(
         )
 
     if ordinary.empty:
-        raise ValueError(
-            "Lo split ordinario è vuoto."
-        )
+        raise ValueError("Lo split ordinario è vuoto.")
 
     stratify_columns = list(
         ordinary_config["stratify_by"]
     )
 
+    # Ogni strato corrisponde a una combinazione osservata,
+    # ad esempio hair_color=2 e face_shape=5.
     ordinary["_stratum"] = make_stratum(
         ordinary,
         stratify_columns,
@@ -207,10 +192,10 @@ def assign_splits(
         ordinary_config["test_ratio"]
     )
 
-    temporary_ratio = (
-        validation_ratio + test_ratio
-    )
+    temporary_ratio = validation_ratio + test_ratio
 
+    # Primo split: train contro la porzione temporanea
+    # che verrà ulteriormente separata in validation e test ordinario.
     train, temporary = train_test_split(
         ordinary,
         train_size=train_ratio,
@@ -224,14 +209,14 @@ def assign_splits(
         test_ratio / temporary_ratio
     )
 
-    validation, test_ordinary = (
-        train_test_split(
-            temporary,
-            test_size=relative_test_ratio,
-            random_state=seed,
-            shuffle=True,
-            stratify=temporary["_stratum"],
-        )
+    # Secondo split: conserviamo la stessa stratificazione
+    # anche nella separazione validation/test ordinario.
+    validation, test_ordinary = train_test_split(
+        temporary,
+        test_size=relative_test_ratio,
+        random_state=seed,
+        shuffle=True,
+        stratify=temporary["_stratum"],
     )
 
     split_frames = []
@@ -247,11 +232,9 @@ def assign_splits(
             errors="ignore",
         ).copy()
 
-        current.insert(
-            1,
-            "split",
-            split_name,
-        )
+        # Inseriamo lo split accanto all'identificativo dell'immagine
+        # per rendere il file risultante più leggibile.
+        current.insert(1, "split", split_name)
 
         split_frames.append(current)
 
@@ -266,6 +249,8 @@ def assign_splits(
         .reset_index(drop=True)
     )
 
+    # Controlli di integrità: ogni immagine deve comparire una sola volta
+    # e deve appartenere a uno degli split previsti.
     if len(result) != len(metadata):
         raise RuntimeError(
             "Il numero finale di esempi non "
@@ -289,6 +274,7 @@ def validate_assignments(
     assigned: pd.DataFrame,
     config: dict,
 ) -> None:
+    # Verifica la separazione OOD e la coerenza degli split
     found_splits = set(
         assigned["split"].unique()
     )
@@ -301,31 +287,19 @@ def validate_assignments(
 
     ood_config = config["compositional_ood"]
 
-    first_attribute = (
-        ood_config["first_attribute"]
-    )
-    second_attribute = (
-        ood_config["second_attribute"]
-    )
+    first_attribute = ood_config["first_attribute"]
+    second_attribute = ood_config["second_attribute"]
 
-    first_value = int(
-        ood_config["first_value"]
-    )
-    second_value = int(
-        ood_config["second_value"]
-    )
+    first_value = int(ood_config["first_value"])
+    second_value = int(ood_config["second_value"])
 
     combination_mask = (
-        (
-            assigned[first_attribute]
-            == first_value
-        )
-        & (
-            assigned[second_attribute]
-            == second_value
-        )
+        (assigned[first_attribute] == first_value)
+        & (assigned[second_attribute] == second_value)
     )
 
+    # La combinazione trattenuta non deve comparire in train,
+    # validation o test ordinario.
     combination_splits = set(
         assigned.loc[
             combination_mask,
@@ -355,6 +329,8 @@ def validate_assignments(
         assigned["split"] == "train"
     ]
 
+    # I singoli valori trattenuti devono comunque essere osservati
+    # nel training: l'obiettivo è testare composizione, non novità assoluta.
     if first_value not in set(
         train[first_attribute]
     ):
@@ -377,21 +353,14 @@ def build_summary(
     config: dict,
     assignments_path: Path,
 ) -> dict:
+    # Costruisce il riepilogo JSON degli split prodotti
     ood_config = config["compositional_ood"]
 
-    first_attribute = (
-        ood_config["first_attribute"]
-    )
-    second_attribute = (
-        ood_config["second_attribute"]
-    )
+    first_attribute = ood_config["first_attribute"]
+    second_attribute = ood_config["second_attribute"]
 
-    first_value = int(
-        ood_config["first_value"]
-    )
-    second_value = int(
-        ood_config["second_value"]
-    )
+    first_value = int(ood_config["first_value"])
+    second_value = int(ood_config["second_value"])
 
     counts = (
         assigned["split"]
@@ -405,6 +374,8 @@ def build_summary(
 
     attribute_coverage = {}
 
+    # Verifichiamo che il trattenimento della combinazione OOD
+    # non abbia eliminato alcun valore individuale dal training.
     for attribute in EXPECTED_VARIANTS:
         expected_values = list(
             range(EXPECTED_VARIANTS[attribute])
@@ -412,9 +383,7 @@ def build_summary(
 
         observed_values = sorted(
             int(value)
-            for value in train[
-                attribute
-            ].unique()
+            for value in train[attribute].unique()
         )
 
         attribute_coverage[attribute] = {
@@ -437,9 +406,7 @@ def build_summary(
             "first_value": first_value,
             "second_attribute": second_attribute,
             "second_value": second_value,
-            "count": int(
-                counts["test_ood"]
-            ),
+            "count": int(counts["test_ood"]),
         },
         "selected_values_in_training": {
             f"{first_attribute}={first_value}": int(
@@ -458,6 +425,8 @@ def build_summary(
         "training_attribute_coverage": (
             attribute_coverage
         ),
+        # Il checksum identifica in modo univoco le assegnazioni
+        # e consente di verificare che non siano cambiate.
         "assignments_sha256": compute_sha256(
             assignments_path
         ),
@@ -471,6 +440,7 @@ def save_splits(
     output_dir: Path,
     config: dict,
 ) -> dict:
+    # Salva gli artefatti degli split e il relativo riepilogo
     output_dir.mkdir(
         parents=True,
         exist_ok=True,
@@ -484,11 +454,13 @@ def save_splits(
         output_dir / "split_assignments.csv"
     )
 
+    # File completo: utile per tutte le fasi successive della pipeline.
     assigned.to_csv(
         full_path,
         index=False,
     )
 
+    # File minimale: utile per confronti, versionamento e checksum.
     assigned[
         ["image_id", "split"]
     ].to_csv(
@@ -496,6 +468,7 @@ def save_splits(
         index=False,
     )
 
+    # Salviamo anche una vista separata per ogni split.
     for split_name in VALID_SPLITS:
         split_path = (
             output_dir / f"{split_name}.csv"
@@ -532,7 +505,7 @@ def save_splits(
     return summary
 
 
-def parse_args():
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
@@ -562,7 +535,7 @@ def parse_args():
     return parser.parse_args()
 
 
-def main():
+def main() -> None:
     args = parse_args()
 
     metadata = pd.read_csv(args.metadata)

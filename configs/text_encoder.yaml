@@ -1,14 +1,19 @@
+# Configurazione del Transformer text encoder.
+
 text_encoder:
+  # Contratto con il tokenizer.
   vocab_size: 132
   max_sequence_length: 44
   pad_token_id: 1
 
+  # Architettura Transformer.
   d_model: 128
   num_heads: 4
   num_layers: 4
-  feed_forward_dim: 512
+  feedforward_dim: 512
   dropout: 0.10
 
+  # Scelte implementative esplicite.
   positional_encoding: sinusoidal
   normalization: pre_norm
   activation: gelu

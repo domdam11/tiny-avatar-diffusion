@@ -1,222 +1,54 @@
-
 import random
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 import numpy as np
 import pandas as pd
 import torch
-import yaml
-
 from PIL import Image
 from tokenizers import Tokenizer
 from torch import Tensor
 from torch.utils.data import DataLoader, Dataset
-from torchvision.transforms import (
-    InterpolationMode,
-)
-from torchvision.transforms import functional as TF
 
-from src.data.build_metadata import (
-    EXPECTED_VARIANTS,
-)
-
-
-VALID_SPLITS = (
-    "train",
-    "validation",
-    "test_ordinary",
-    "test_ood",
-)
-
-
-def load_data_config(
-    config_path: Path,
-) -> dict:
-    with config_path.open(
-        "r",
-        encoding="utf-8",
-    ) as file:
-        config = yaml.safe_load(file)
-
-    if "data" not in config:
-        raise ValueError(
-            "Sezione 'data' mancante."
-        )
-
-    if "loader" not in config:
-        raise ValueError(
-            "Sezione 'loader' mancante."
-        )
-
-    data_config = config["data"]
-    loader_config = config["loader"]
-
-    required_data_keys = {
-        "dataset_root",
-        "captions_path",
-        "tokenizer_path",
-        "image_size",
-        "image_channels",
-        "normalization",
-        "expected_split_counts",
-        "conditioning_attributes",
-    }
-
-    missing_data_keys = (
-        required_data_keys
-        - set(data_config)
-    )
-
-    if missing_data_keys:
-        raise ValueError(
-            "Parametri data mancanti: "
-            f"{sorted(missing_data_keys)}"
-        )
-
-    required_loader_keys = {
-        "train_batch_size",
-        "evaluation_batch_size",
-        "num_workers",
-        "pin_memory",
-        "persistent_workers",
-        "prefetch_factor",
-        "drop_last",
-        "seed",
-    }
-
-    missing_loader_keys = (
-        required_loader_keys
-        - set(loader_config)
-    )
-
-    if missing_loader_keys:
-        raise ValueError(
-            "Parametri loader mancanti: "
-            f"{sorted(missing_loader_keys)}"
-        )
-
-    if int(data_config["image_size"]) != 32:
-        raise ValueError(
-            "La configurazione iniziale richiede "
-            "immagini 32x32."
-        )
-
-    if int(data_config["image_channels"]) != 3:
-        raise ValueError(
-            "Sono richieste immagini RGB."
-        )
-
-    normalization = data_config[
-        "normalization"
-    ]
-
-    if (
-        float(normalization["minimum"]) != -1.0
-        or float(normalization["maximum"]) != 1.0
-    ):
-        raise ValueError(
-            "La normalizzazione deve essere [-1, 1]."
-        )
-
-    expected_split_counts = data_config[
-        "expected_split_counts"
-    ]
-
-    if set(expected_split_counts) != set(
-        VALID_SPLITS
-    ):
-        raise ValueError(
-            "I conteggi attesi devono includere "
-            "esattamente i quattro split."
-        )
-
-    if sum(
-        int(value)
-        for value
-        in expected_split_counts.values()
-    ) != 10_000:
-        raise ValueError(
-            "I conteggi degli split non sommano "
-            "a 10.000."
-        )
-
-    conditioning_attributes = data_config[
-        "conditioning_attributes"
-    ]
-
-    if (
-        len(conditioning_attributes)
-        != len(set(conditioning_attributes))
-    ):
-        raise ValueError(
-            "Gli attributi di conditioning "
-            "contengono duplicati."
-        )
-
-    unknown_attributes = sorted(
-        set(conditioning_attributes)
-        - set(EXPECTED_VARIANTS)
-    )
-
-    if unknown_attributes:
-        raise ValueError(
-            "Attributi di conditioning sconosciuti: "
-            f"{unknown_attributes}"
-        )
-
-    if int(loader_config["num_workers"]) < 0:
-        raise ValueError(
-            "num_workers non può essere negativo."
-        )
-
-    if int(loader_config["train_batch_size"]) < 1:
-        raise ValueError(
-            "train_batch_size deve essere positivo."
-        )
-
-    if (
-        int(
-            loader_config[
-                "evaluation_batch_size"
-            ]
-        )
-        < 1
-    ):
-        raise ValueError(
-            "evaluation_batch_size deve essere "
-            "positivo."
-        )
-
-    return config
+from src.data.build_metadata import EXPECTED_VARIANTS
+from src.data.build_splits import VALID_SPLITS
 
 
 def image_to_tensor(
     image: Image.Image,
     image_size: int,
 ) -> Tensor:
-    image = image.convert("RGB")
+    # Converte un'immagine PIL RGB in un tensore CHW in [-1, 1]
+    if image_size < 1:
+        raise ValueError(
+            "image_size deve essere positivo."
+        )
 
-    image = TF.resize(
-        image,
-        size=[image_size, image_size],
-        interpolation=(
-            InterpolationMode.BILINEAR
-        ),
-        antialias=True,
+    image = image.convert("RGB")
+    image = image.resize(
+        (image_size, image_size),
+        resample=Image.Resampling.BILINEAR,
     )
 
-    tensor = TF.pil_to_tensor(
-        image
-    ).to(dtype=torch.float32)
+    array = np.asarray(
+        image,
+        dtype=np.float32,
+    )
 
-    tensor = tensor / 255.0
-    tensor = tensor * 2.0 - 1.0
+    # HWC [0, 255] -> CHW [-1, 1]
+    tensor = torch.from_numpy(
+        array.transpose(2, 0, 1)
+    )
 
-    return tensor
+    return tensor.div(127.5).sub(1.0)
 
 
 class CartoonAvatarDataset(Dataset):
+    # Dataset per immagini avatar e caption condizionali.
+
+    # Le caption sono tokenizzate durante l'inizializzazione: questo evita
+    # di ripetere la tokenizzazione ad ogni chiamata di __getitem__.
+
 
     def __init__(
         self,
@@ -224,54 +56,37 @@ class CartoonAvatarDataset(Dataset):
         captions_path: Path,
         tokenizer_path: Path,
         split: str,
-        image_size: int = 32,
+        image_size: int,
         expected_count: Optional[int] = None,
         conditioning_attributes: Optional[
-            list[str]
+            Sequence[str]
         ] = None,
         validate_paths: bool = True,
     ) -> None:
-        super().__init__()
-
         if split not in VALID_SPLITS:
             raise ValueError(
-                f"Split non valido: {split}. "
-                f"Valori ammessi: {VALID_SPLITS}."
+                f"Split non valido: {split}."
             )
 
-        if image_size < 1:
-            raise ValueError(
-                "image_size deve essere positivo."
-            )
-
-        self.dataset_root = (
-            Path(dataset_root).resolve()
-        )
-
-        self.captions_path = Path(
-            captions_path
-        ).resolve()
-
-        self.tokenizer_path = Path(
-            tokenizer_path
-        ).resolve()
-
+        self.dataset_root = dataset_root.resolve()
+        self.captions_path = captions_path
+        self.tokenizer_path = tokenizer_path
         self.split = split
         self.image_size = int(image_size)
 
-        if not self.dataset_root.exists():
+        if not self.dataset_root.is_dir():
             raise FileNotFoundError(
-                f"Dataset root non trovato: "
+                f"Dataset root non trovata: "
                 f"{self.dataset_root}"
             )
 
-        if not self.captions_path.exists():
+        if not self.captions_path.is_file():
             raise FileNotFoundError(
                 f"File caption non trovato: "
                 f"{self.captions_path}"
             )
 
-        if not self.tokenizer_path.exists():
+        if not self.tokenizer_path.is_file():
             raise FileNotFoundError(
                 f"Tokenizer non trovato: "
                 f"{self.tokenizer_path}"
@@ -296,8 +111,7 @@ class CartoonAvatarDataset(Dataset):
         }
 
         missing_columns = (
-            required_columns
-            - set(metadata.columns)
+            required_columns - set(metadata.columns)
         )
 
         if missing_columns:
@@ -308,8 +122,7 @@ class CartoonAvatarDataset(Dataset):
 
         if metadata["image_id"].duplicated().any():
             raise ValueError(
-                "Il metadata contiene image_id "
-                "duplicati."
+                "Il metadata contiene image_id duplicati."
             )
 
         available_splits = set(
@@ -323,6 +136,7 @@ class CartoonAvatarDataset(Dataset):
                 f"{set(VALID_SPLITS)}."
             )
 
+        # L'ordine canonico stabilizza dataset, test e campionamento.
         metadata = (
             metadata[
                 metadata["split"] == split
@@ -387,17 +201,15 @@ class CartoonAvatarDataset(Dataset):
 
         image_paths = []
 
-        for relative_path in metadata[
-            "image_path"
-        ]:
+        for relative_path in metadata["image_path"]:
             absolute_path = (
                 self.dataset_root
                 / str(relative_path)
             ).resolve()
 
+            # Protezione contro percorsi che escano dalla root del dataset.
             if (
-                absolute_path
-                != self.dataset_root
+                absolute_path != self.dataset_root
                 and self.dataset_root
                 not in absolute_path.parents
             ):
@@ -407,9 +219,7 @@ class CartoonAvatarDataset(Dataset):
                     f"{relative_path}"
                 )
 
-            image_paths.append(
-                absolute_path
-            )
+            image_paths.append(absolute_path)
 
         if validate_paths:
             missing_paths = [
@@ -435,9 +245,7 @@ class CartoonAvatarDataset(Dataset):
             .tolist()
         )
 
-        encodings = tokenizer.encode_batch(
-            captions
-        )
+        encodings = tokenizer.encode_batch(captions)
 
         encoded_lengths = {
             len(encoding.ids)
@@ -490,9 +298,7 @@ class CartoonAvatarDataset(Dataset):
 
         self.conditioning_values = torch.tensor(
             metadata[
-                list(
-                    self.conditioning_attributes
-                )
+                list(self.conditioning_attributes)
             ].to_numpy(dtype=np.int64),
             dtype=torch.long,
         )
@@ -531,9 +337,7 @@ class CartoonAvatarDataset(Dataset):
                 f"{tuple(image_tensor.shape)}"
             )
 
-        if not torch.isfinite(
-            image_tensor
-        ).all():
+        if not torch.isfinite(image_tensor).all():
             raise RuntimeError(
                 f"Valori non finiti in {image_path}"
             )
@@ -553,9 +357,7 @@ class CartoonAvatarDataset(Dataset):
             "attention_mask": (
                 self.attention_masks[index]
             ),
-            "attributes": (
-                self.all_attributes[index]
-            ),
+            "attributes": self.all_attributes[index],
             "conditioning_values": (
                 self.conditioning_values[index]
             ),
@@ -566,14 +368,12 @@ class CartoonAvatarDataset(Dataset):
         }
 
 
-def seed_worker(
-    worker_id: int,
-) -> None:
+def seed_worker(worker_id: int) -> None:
+    # Inizializza NumPy e random in ogni worker del DataLoader
     del worker_id
 
     worker_seed = (
-        torch.initial_seed()
-        % 2**32
+        torch.initial_seed() % 2**32
     )
 
     np.random.seed(worker_seed)
@@ -591,6 +391,7 @@ def build_dataloader(
     drop_last: bool,
     seed: int,
 ) -> DataLoader:
+    # Costruisce un DataLoader riproducibile per uno split
     if batch_size < 1:
         raise ValueError(
             "batch_size deve essere positivo."
@@ -618,6 +419,7 @@ def build_dataloader(
         "generator": generator,
     }
 
+    # PyTorch non accetta questi argomenti con num_workers=0.
     if num_workers > 0:
         loader_arguments.update(
             {
@@ -630,14 +432,13 @@ def build_dataloader(
             }
         )
 
-    return DataLoader(
-        **loader_arguments
-    )
+    return DataLoader(**loader_arguments)
 
 
 def build_datasets(
     config: dict,
 ) -> dict[str, CartoonAvatarDataset]:
+    # Costruisce un dataset per ogni split del protocollo
     data_config = config["data"]
 
     dataset_root = Path(
@@ -652,59 +453,47 @@ def build_datasets(
         data_config["tokenizer_path"]
     )
 
-    image_size = int(
-        data_config["image_size"]
-    )
+    image_size = int(data_config["image_size"])
 
     expected_counts = data_config[
         "expected_split_counts"
     ]
 
-    conditioning_attributes = (
-        data_config[
-            "conditioning_attributes"
-        ]
-    )
+    conditioning_attributes = data_config[
+        "conditioning_attributes"
+    ]
 
     datasets = {}
 
     for split_name in VALID_SPLITS:
-        datasets[split_name] = (
-            CartoonAvatarDataset(
-                dataset_root=dataset_root,
-                captions_path=captions_path,
-                tokenizer_path=tokenizer_path,
-                split=split_name,
-                image_size=image_size,
-                expected_count=int(
-                    expected_counts[
-                        split_name
-                    ]
-                ),
-                conditioning_attributes=(
-                    conditioning_attributes
-                ),
-            )
+        datasets[split_name] = CartoonAvatarDataset(
+            dataset_root=dataset_root,
+            captions_path=captions_path,
+            tokenizer_path=tokenizer_path,
+            split=split_name,
+            image_size=image_size,
+            expected_count=int(
+                expected_counts[split_name]
+            ),
+            conditioning_attributes=(
+                conditioning_attributes
+            ),
         )
 
     return datasets
 
 
 def build_dataloaders(
-    datasets: dict[
-        str,
-        CartoonAvatarDataset,
-    ],
+    datasets: dict[str, CartoonAvatarDataset],
     config: dict,
 ) -> dict[str, DataLoader]:
+    # Costruisce un DataLoader per ogni split
     loader_config = config["loader"]
 
     loaders = {}
 
     for split_name in VALID_SPLITS:
-        is_training = (
-            split_name == "train"
-        )
+        is_training = split_name == "train"
 
         batch_size = int(
             loader_config[
@@ -714,44 +503,29 @@ def build_dataloaders(
             ]
         )
 
-        loaders[split_name] = (
-            build_dataloader(
-                dataset=datasets[
-                    split_name
-                ],
-                batch_size=batch_size,
-                shuffle=is_training,
-                num_workers=int(
-                    loader_config[
-                        "num_workers"
-                    ]
-                ),
-                pin_memory=bool(
-                    loader_config[
-                        "pin_memory"
-                    ]
-                ),
-                persistent_workers=bool(
-                    loader_config[
-                        "persistent_workers"
-                    ]
-                ),
-                prefetch_factor=int(
-                    loader_config[
-                        "prefetch_factor"
-                    ]
-                ),
-                drop_last=bool(
-                    loader_config[
-                        "drop_last"
-                    ]
-                    if is_training
-                    else False
-                ),
-                seed=int(
-                    loader_config["seed"]
-                ),
+        loaders[split_name] = build_dataloader(
+            dataset=datasets[split_name],
+            batch_size=batch_size,
+            shuffle=is_training,
+            num_workers=int(
+                loader_config["num_workers"]
+            ),
+            pin_memory=bool(
+                loader_config["pin_memory"]
+            ),
+            persistent_workers=bool(
+                loader_config["persistent_workers"]
+            ),
+            prefetch_factor=int(
+                loader_config["prefetch_factor"]
+            ),
+            # I batch evaluation non devono perdere esempi.
+            drop_last=bool(
+                loader_config["drop_last"]
             )
+            if is_training
+            else False,
+            seed=int(loader_config["seed"]),
         )
 
     return loaders

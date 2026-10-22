@@ -1,12 +1,11 @@
-
 import argparse
-import hashlib
 import json
 from pathlib import Path
 
 import pandas as pd
 
 
+# Numero atteso di varianti per ciascun attributo discreto.
 EXPECTED_VARIANTS = {
     "eye_angle": 3,
     "eye_lashes": 2,
@@ -29,227 +28,133 @@ EXPECTED_VARIANTS = {
 }
 
 
-def parse_attribute_file(csv_path: Path) -> dict:
-    table = pd.read_csv(
+def parse_single_metadata(csv_path: Path, dataset_root: Path) -> dict:
+    # Ogni CSV descrive un singolo avatar come tabella verticale
+    # attributo -> valore -> numero totale di varianti possibili.
+    raw = pd.read_csv(
         csv_path,
         header=None,
         names=["attribute", "value", "num_variants"],
-        skipinitialspace=True,
     )
 
-    table["attribute"] = (
-        table["attribute"]
-        .astype(str)
-        .str.strip()
-        .str.replace('"', "", regex=False)
-    )
+    # Verifichiamo che gli attributi siano esattamente quelli attesi.
+    observed_attributes = raw["attribute"].tolist()
+    expected_attributes = list(EXPECTED_VARIANTS.keys())
 
-    if table["attribute"].duplicated().any():
-        duplicates = table.loc[
-            table["attribute"].duplicated(),
-            "attribute",
-        ].tolist()
+    if observed_attributes != expected_attributes:
         raise ValueError(
-            f"Attributi duplicati in {csv_path}: {duplicates}"
+            f"Ordine o contenuto attributi non valido in {csv_path.name}."
         )
 
-    found_attributes = set(table["attribute"])
-    expected_attributes = set(EXPECTED_VARIANTS)
-
-    missing = sorted(expected_attributes - found_attributes)
-    unexpected = sorted(found_attributes - expected_attributes)
-
-    if missing or unexpected:
-        raise ValueError(
-            f"Schema non valido in {csv_path}. "
-            f"Mancanti={missing}; inattesi={unexpected}"
-        )
-
-    output = {}
-
-    for row in table.itertuples(index=False):
-        attribute = row.attribute
-        value = int(row.value)
-        num_variants = int(row.num_variants)
-        expected_num_variants = EXPECTED_VARIANTS[attribute]
-
-        if num_variants != expected_num_variants:
-            raise ValueError(
-                f"{csv_path}: {attribute} dichiara "
-                f"{num_variants} varianti, attese "
-                f"{expected_num_variants}."
-            )
-
-        if not 0 <= value < num_variants:
-            raise ValueError(
-                f"{csv_path}: valore {value} non valido "
-                f"per {attribute}, che ha {num_variants} varianti."
-            )
-
-        output[attribute] = value
-
-    return output
-
-
-def compute_file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-
-    with path.open("rb") as file:
-        for block in iter(lambda: file.read(1024 * 1024), b""):
-            digest.update(block)
-
-    return digest.hexdigest()
-
-
-def build_metadata(
-    dataset_root: Path,
-    output_dir: Path,
-) -> pd.DataFrame:
-    dataset_root = dataset_root.resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    csv_files = sorted(dataset_root.rglob("*.csv"))
-    png_files = sorted(dataset_root.rglob("*.png"))
-
-    if not csv_files:
-        raise FileNotFoundError(
-            f"Nessun CSV trovato in {dataset_root}"
-        )
-
-    if not png_files:
-        raise FileNotFoundError(
-            f"Nessun PNG trovato in {dataset_root}"
-        )
-
-    png_by_stem = {}
-
-    for image_path in png_files:
-        if image_path.stem in png_by_stem:
-            raise ValueError(
-                f"ID immagine duplicato: {image_path.stem}"
-            )
-        png_by_stem[image_path.stem] = image_path
-
-    rows = []
-    seen_ids = set()
-
-    for csv_path in csv_files:
-        image_id = csv_path.stem
-
-        if image_id in seen_ids:
-            raise ValueError(
-                f"ID CSV duplicato: {image_id}"
-            )
-
-        seen_ids.add(image_id)
-
-        if image_id not in png_by_stem:
-            raise FileNotFoundError(
-                f"PNG mancante per {csv_path}"
-            )
-
-        image_path = png_by_stem[image_id]
-        attributes = parse_attribute_file(csv_path)
-
-        row = {
-            "image_id": image_id,
-            "image_path": image_path.relative_to(
-                dataset_root
-            ).as_posix(),
-            "csv_path": csv_path.relative_to(
-                dataset_root
-            ).as_posix(),
-            **attributes,
-        }
-
-        rows.append(row)
-
-    png_without_csv = sorted(
-        set(png_by_stem) - seen_ids
-    )
-
-    if png_without_csv:
-        raise ValueError(
-            f"Trovati {len(png_without_csv)} PNG senza CSV. "
-            f"Primi ID: {png_without_csv[:5]}"
-        )
-
-    metadata = pd.DataFrame(rows)
-    metadata = metadata.sort_values(
-        "image_id"
-    ).reset_index(drop=True)
-
-    if metadata["image_id"].duplicated().any():
-        raise ValueError(
-            "Il metadata finale contiene ID duplicati."
-        )
-
-    metadata_path = output_dir / "metadata.csv"
-    metadata.to_csv(metadata_path, index=False)
-
-    summary = {
-        "dataset_root": str(dataset_root),
-        "num_examples": int(len(metadata)),
-        "num_attributes": len(EXPECTED_VARIANTS),
-        "attributes": EXPECTED_VARIANTS,
-        "metadata_filename": metadata_path.name,
-        "metadata_sha256": compute_file_sha256(
-            metadata_path
-        ),
+    # Verifichiamo che il numero di varianti dichiarato nel CSV
+    # coincida con quello atteso per ogni attributo.
+    observed_num_variants = {
+        row.attribute: int(row.num_variants)
+        for row in raw.itertuples(index=False)
     }
 
-    summary_path = output_dir / "metadata_summary.json"
-
-    with summary_path.open("w", encoding="utf-8") as file:
-        json.dump(
-            summary,
-            file,
-            indent=2,
-            sort_keys=True,
+    if observed_num_variants != EXPECTED_VARIANTS:
+        raise ValueError(
+            f"Numero varianti non coerente in {csv_path.name}."
         )
+
+    image_id = csv_path.stem
+    image_path = csv_path.with_suffix(".png")
+
+    if not image_path.is_file():
+        raise FileNotFoundError(
+            f"Immagine mancante per {image_id}."
+        )
+
+    # Rappresentazione piatta: una riga per immagine,
+    # una colonna per attributo.
+    record = {
+        "image_id": image_id,
+        "image_path": str(image_path.relative_to(dataset_root)),
+        "csv_path": str(csv_path.relative_to(dataset_root)),
+    }
+
+    for row in raw.itertuples(index=False):
+        record[row.attribute] = int(row.value)
+
+    return record
+
+
+def build_metadata(dataset_root: Path) -> pd.DataFrame:
+    # Costruiamo il metadata centralizzato iterando in modo deterministico
+    # sui CSV ordinati lessicograficamente.
+    csv_paths = sorted(dataset_root.rglob("*.csv"))
+
+    if len(csv_paths) != 10_000:
+        raise ValueError(
+            f"Attesi 10.000 CSV, trovati {len(csv_paths)}."
+        )
+
+    records = [
+        parse_single_metadata(csv_path, dataset_root)
+        for csv_path in csv_paths
+    ]
+
+    metadata = pd.DataFrame(records)
+
+    # Ordinamento canonico per riproducibilità.
+    metadata = (
+        metadata
+        .sort_values("image_id")
+        .reset_index(drop=True)
+    )
+
+    if metadata["image_id"].duplicated().any():
+        raise ValueError("Sono presenti image_id duplicati.")
 
     return metadata
 
 
-def parse_args():
+def build_summary(metadata: pd.DataFrame) -> dict:
+    # Riepilogo semplice ma utile per i controlli successivi.
+    return {
+        "num_examples": int(len(metadata)),
+        "num_attributes": int(len(EXPECTED_VARIANTS)),
+        "columns": list(metadata.columns),
+    }
+
+
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
         "--dataset-root",
         type=Path,
-        required=True,
+        default=Path("data/raw/cartoonset10k"),
     )
-
     parser.add_argument(
-        "--output-dir",
+        "--output",
         type=Path,
-        default=Path("data/processed"),
+        default=Path("data/processed/metadata.csv"),
+    )
+    parser.add_argument(
+        "--summary-output",
+        type=Path,
+        default=Path("data/processed/metadata_summary.json"),
     )
 
     return parser.parse_args()
 
 
-def main():
+def main() -> None:
     args = parse_args()
 
-    metadata = build_metadata(
-        dataset_root=args.dataset_root,
-        output_dir=args.output_dir,
-    )
+    args.output.parent.mkdir(parents=True, exist_ok=True)
 
-    print(f"Esempi elaborati: {len(metadata)}")
-    print(
-        f"Attributi elaborati: "
-        f"{len(EXPECTED_VARIANTS)}"
-    )
-    print(
-        f"Metadata salvato in: "
-        f"{args.output_dir / 'metadata.csv'}"
-    )
-    print(
-        f"Riepilogo salvato in: "
-        f"{args.output_dir / 'metadata_summary.json'}"
-    )
+    metadata = build_metadata(args.dataset_root)
+    summary = build_summary(metadata)
+
+    metadata.to_csv(args.output, index=False)
+
+    with args.summary_output.open("w", encoding="utf-8") as file:
+        json.dump(summary, file, indent=2, sort_keys=True)
+
+    print(json.dumps(summary, indent=2, sort_keys=True))
 
 
 if __name__ == "__main__":
